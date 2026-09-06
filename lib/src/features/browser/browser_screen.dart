@@ -11,6 +11,8 @@ import 'package:share_plus/share_plus.dart';
 import '../../core/s3/s3_client.dart';
 import '../../core/s3/s3_models.dart';
 import '../../core/storage/account_store.dart';
+import '../../ui/glass.dart';
+import '../../ui/theme.dart';
 import '../transfers/transfer_manager.dart';
 import '../viewers/viewer_kind.dart';
 
@@ -412,32 +414,16 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
     );
   }
 
-  IconData _iconFor(S3Object obj) {
-    final ext = obj.extension;
-    if (['jpg', 'jpeg', 'png', 'gif', 'webp', 'heic'].contains(ext)) {
-      return Icons.image_outlined;
-    }
-    if (['mp4', 'mov', 'mkv', 'webm'].contains(ext)) {
-      return Icons.movie_outlined;
-    }
-    if (['mp3', 'wav', 'flac', 'm4a'].contains(ext)) {
-      return Icons.audio_file_outlined;
-    }
-    if (['pdf'].contains(ext)) return Icons.picture_as_pdf_outlined;
-    if (['zip', 'tar', 'gz', 'rar', '7z'].contains(ext)) {
-      return Icons.folder_zip_outlined;
-    }
-    if (['txt', 'md', 'json', 'xml', 'csv', 'log'].contains(ext)) {
-      return Icons.description_outlined;
-    }
-    return Icons.insert_drive_file_outlined;
-  }
-
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
+      extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: Text(widget.bucket),
+        title: Text(
+          widget.bucket,
+          style: const TextStyle(fontWeight: FontWeight.w800),
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.create_new_folder_outlined),
@@ -494,8 +480,7 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
                 child: TextField(
                   decoration: const InputDecoration(
                     hintText: 'Filter in this folder…',
-                    prefixIcon: Icon(Icons.search),
-                    border: OutlineInputBorder(),
+                    prefixIcon: Icon(Icons.search_rounded),
                     isDense: true,
                   ),
                   onChanged: (v) => setState(() => _filter = v.toLowerCase()),
@@ -505,78 +490,79 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
           ),
         ),
       ),
-      body: FutureBuilder<ListObjectsResult>(
-        future: _future,
-        builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snap.hasError) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
+      body: AppBackground(
+        child: SafeArea(
+          child: FutureBuilder<ListObjectsResult>(
+            future: _future,
+            builder: (context, snap) {
+              if (snap.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (snap.hasError) {
+                return EmptyState(
+                  icon: Icons.error_outline_rounded,
+                  title: 'Could not list objects',
+                  subtitle: '${snap.error}',
+                  action: GlowButton(
+                    label: 'Retry',
+                    icon: Icons.refresh_rounded,
+                    onPressed: _refresh,
+                  ),
+                );
+              }
+              final result = snap.data!;
+              final prefixes = result.prefixes
+                  .where(
+                    (p) => _filter.isEmpty || p.toLowerCase().contains(_filter),
+                  )
+                  .toList();
+              final objects = result.objects
+                  .where(
+                    (o) =>
+                        _filter.isEmpty ||
+                        o.name.toLowerCase().contains(_filter) ||
+                        o.key.toLowerCase().contains(_filter),
+                  )
+                  .toList();
+              if (prefixes.isEmpty && objects.isEmpty) {
+                return EmptyState(
+                  icon: Icons.folder_open_rounded,
+                  title: 'Empty folder',
+                  subtitle: 'Upload files or create a folder to begin.',
+                  action: GlowButton(
+                    label: 'Upload',
+                    icon: Icons.upload_rounded,
+                    onPressed: _uploading ? null : _upload,
+                  ),
+                );
+              }
+              return RefreshIndicator(
+                onRefresh: () async => _refresh(),
+                child: ListView(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
                   children: [
-                    const Icon(Icons.error_outline, size: 48),
-                    const SizedBox(height: 12),
-                    Text('${snap.error}', textAlign: TextAlign.center),
-                    const SizedBox(height: 12),
-                    FilledButton(
-                      onPressed: _refresh,
-                      child: const Text('Retry'),
-                    ),
+                    for (final p in prefixes) ...[
+                      _FolderCard(
+                        prefix: p,
+                        prefixBase: _prefix,
+                        onTap: () => _enterPrefix(p),
+                      ),
+                      const SizedBox(height: 10),
+                    ],
+                    for (final obj in objects) ...[
+                      _ObjectCard(
+                        obj: obj,
+                        scheme: scheme,
+                        onTap: () => _openObject(obj),
+                      ),
+                      const SizedBox(height: 10),
+                    ],
                   ],
                 ),
-              ),
-            );
-          }
-          final result = snap.data!;
-          final prefixes = result.prefixes
-              .where(
-                (p) => _filter.isEmpty || p.toLowerCase().contains(_filter),
-              )
-              .toList();
-          final objects = result.objects
-              .where(
-                (o) =>
-                    _filter.isEmpty ||
-                    o.name.toLowerCase().contains(_filter) ||
-                    o.key.toLowerCase().contains(_filter),
-              )
-              .toList();
-          if (prefixes.isEmpty && objects.isEmpty) {
-            return const Center(
-              child: Text('Empty folder. Upload files or create a folder.'),
-            );
-          }
-          return RefreshIndicator(
-            onRefresh: () async => _refresh(),
-            child: ListView.separated(
-              itemCount: prefixes.length + objects.length,
-              separatorBuilder: (_, _) => const Divider(height: 1),
-              itemBuilder: (context, i) {
-                if (i < prefixes.length) {
-                  final p = prefixes[i];
-                  final name = p.substring(_prefix.length).replaceAll('/', '');
-                  return ListTile(
-                    leading: const Icon(Icons.folder_outlined),
-                    title: Text(name.isEmpty ? p : name),
-                    onTap: () => _enterPrefix(p),
-                  );
-                }
-                final obj = objects[i - prefixes.length];
-                return ListTile(
-                  leading: Icon(_iconFor(obj)),
-                  title: Text(obj.name),
-                  subtitle: Text(formatBytes(obj.size)),
-                  trailing: const Icon(Icons.more_vert),
-                  onTap: () => _openObject(obj),
-                );
-              },
-            ),
-          );
-        },
+              );
+            },
+          ),
+        ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _uploading ? null : _upload,
@@ -588,6 +574,140 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
               )
             : const Icon(Icons.upload),
         label: const Text('Upload'),
+      ),
+    );
+  }
+}
+
+/// Glass folder row with gradient folder tile.
+class _FolderCard extends StatelessWidget {
+  final String prefix;
+  final String prefixBase;
+  final VoidCallback onTap;
+  const _FolderCard({
+    required this.prefix,
+    required this.prefixBase,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final name = prefix.substring(prefixBase.length).replaceAll('/', '');
+    return Glass(
+      padding: const EdgeInsets.all(12),
+      radius: 16,
+      onTap: onTap,
+      child: Row(
+        children: [
+          Container(
+            height: 42,
+            width: 42,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(13),
+              gradient: const LinearGradient(
+                colors: [Color(0xFF38BDF8), AppColors.indigo],
+              ),
+            ),
+            child: const Icon(
+              Icons.folder_rounded,
+              color: Colors.white,
+              size: 22,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              name.isEmpty ? prefix : name,
+              style: const TextStyle(fontWeight: FontWeight.w700),
+            ),
+          ),
+          const Icon(Icons.chevron_right_rounded),
+        ],
+      ),
+    );
+  }
+}
+
+/// Glass file row with type-tinted icon, size, and viewer hint.
+class _ObjectCard extends StatelessWidget {
+  final S3Object obj;
+  final ColorScheme scheme;
+  final VoidCallback onTap;
+  const _ObjectCard({
+    required this.obj,
+    required this.scheme,
+    required this.onTap,
+  });
+
+  Color get _tint {
+    final kind = viewerKindForKey(obj.key);
+    return switch (kind) {
+      ViewerKind.image => const Color(0xFF34D399),
+      ViewerKind.video => const Color(0xFFF472B6),
+      ViewerKind.pdf => const Color(0xFFF87171),
+      ViewerKind.text => const Color(0xFF60A5FA),
+      null => scheme.primary,
+    };
+  }
+
+  IconData get _icon {
+    final kind = viewerKindForKey(obj.key);
+    return switch (kind) {
+      ViewerKind.image => Icons.image_rounded,
+      ViewerKind.video => Icons.movie_rounded,
+      ViewerKind.pdf => Icons.picture_as_pdf_rounded,
+      ViewerKind.text => Icons.description_rounded,
+      null => Icons.insert_drive_file_rounded,
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Glass(
+      padding: const EdgeInsets.all(12),
+      radius: 16,
+      onTap: onTap,
+      child: Row(
+        children: [
+          Container(
+            height: 42,
+            width: 42,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(13),
+              color: _tint.withValues(alpha: 0.18),
+              border: Border.all(color: _tint.withValues(alpha: 0.35)),
+            ),
+            child: Icon(_icon, color: _tint, size: 22),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  obj.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _BrowserState.formatBytes(obj.size),
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: scheme.onSurface.withValues(alpha: 0.55),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (viewerKindForKey(obj.key) != null)
+            Icon(
+              Icons.open_in_new_rounded,
+              size: 18,
+              color: scheme.onSurface.withValues(alpha: 0.4),
+            ),
+        ],
       ),
     );
   }

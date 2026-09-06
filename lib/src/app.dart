@@ -13,6 +13,7 @@ import 'features/viewers/image_viewer_screen.dart';
 import 'features/viewers/pdf_viewer_screen.dart';
 import 'features/viewers/text_editor_screen.dart';
 import 'features/viewers/video_player_screen.dart';
+import 'ui/theme.dart';
 
 final _router = GoRouter(
   initialLocation: '/',
@@ -103,17 +104,9 @@ class CloudDockApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp.router(
       title: 'CloudDock',
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
-        useMaterial3: true,
-      ),
-      darkTheme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.teal,
-          brightness: Brightness.dark,
-        ),
-        useMaterial3: true,
-      ),
+      theme: buildLightTheme(),
+      darkTheme: buildDarkTheme(),
+      themeMode: ThemeMode.system,
       routerConfig: _router,
     );
   }

@@ -1,4 +1,4 @@
-// Bucket list for one account.
+// Bucket list for one account: glass cards.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,6 +8,7 @@ import '../../core/s3/s3_account.dart';
 import '../../core/s3/s3_client.dart';
 import '../../core/s3/s3_models.dart';
 import '../../core/storage/account_store.dart';
+import '../../ui/glass.dart';
 
 class BucketsScreen extends ConsumerStatefulWidget {
   final String accountId;
@@ -44,10 +45,7 @@ class _BucketsState extends ConsumerState<BucketsScreen> {
         content: TextField(
           controller: controller,
           autofocus: true,
-          decoration: const InputDecoration(
-            hintText: 'my-bucket',
-            border: OutlineInputBorder(),
-          ),
+          decoration: const InputDecoration(hintText: 'my-bucket'),
         ),
         actions: [
           TextButton(
@@ -126,73 +124,147 @@ class _BucketsState extends ConsumerState<BucketsScreen> {
       return const Scaffold(body: Center(child: Text('Account not found')));
     }
     return Scaffold(
+      extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: Text('${account.name} • ${account.provider.label}'),
+        title: Text(
+          account.name,
+          style: const TextStyle(fontWeight: FontWeight.w800),
+        ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
+            icon: const Icon(Icons.refresh_rounded),
             tooltip: 'Refresh',
             onPressed: _refresh,
           ),
+          const SizedBox(width: 4),
         ],
       ),
-      body: FutureBuilder<List<S3Bucket>>(
-        future: _future,
-        builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (snap.hasError) {
-            return Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const Icon(Icons.error_outline, size: 48),
-                    const SizedBox(height: 12),
-                    Text('${snap.error}', textAlign: TextAlign.center),
-                    const SizedBox(height: 12),
-                    FilledButton(
-                      onPressed: _refresh,
-                      child: const Text('Retry'),
+      body: AppBackground(
+        child: SafeArea(
+          child: FutureBuilder<List<S3Bucket>>(
+            future: _future,
+            builder: (context, snap) {
+              if (snap.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              if (snap.hasError) {
+                return EmptyState(
+                  icon: Icons.error_outline_rounded,
+                  title: 'Could not list buckets',
+                  subtitle: '${snap.error}',
+                  action: GlowButton(
+                    label: 'Retry',
+                    icon: Icons.refresh_rounded,
+                    onPressed: _refresh,
+                  ),
+                );
+              }
+              final buckets = snap.data ?? [];
+              if (buckets.isEmpty) {
+                return EmptyState(
+                  icon: Icons.inventory_2_outlined,
+                  title: 'No buckets',
+                  subtitle: 'Create your first bucket to get started.',
+                  action: GlowButton(
+                    label: 'New bucket',
+                    icon: Icons.add_rounded,
+                    onPressed: _createBucket,
+                  ),
+                );
+              }
+              return ListView(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+                children: [
+                  _AccountStrip(account: account),
+                  const SectionLabel('Buckets'),
+                  for (final b in buckets) ...[
+                    Glass(
+                      padding: const EdgeInsets.all(14),
+                      onTap: () =>
+                          context.push('/browse/${widget.accountId}/${b.name}'),
+                      child: Row(
+                        children: [
+                          ProviderBadge(provider: account.provider, size: 44),
+                          const SizedBox(width: 14),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  b.name,
+                                  style: const TextStyle(
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 15.5,
+                                  ),
+                                ),
+                                if (b.creationDate != null)
+                                  Text(
+                                    'Created ${b.creationDate!.toLocal()}'
+                                        .split('.')
+                                        .first,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Theme.of(context)
+                                          .colorScheme
+                                          .onSurface
+                                          .withValues(alpha: 0.55),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                          IconButton(
+                            icon: const Icon(Icons.delete_outline_rounded),
+                            tooltip: 'Delete bucket',
+                            onPressed: () => _deleteBucket(b.name),
+                          ),
+                          const Icon(Icons.chevron_right_rounded),
+                        ],
+                      ),
                     ),
+                    const SizedBox(height: 12),
                   ],
-                ),
-              ),
-            );
-          }
-          final buckets = snap.data ?? [];
-          if (buckets.isEmpty) {
-            return const Center(child: Text('No buckets. Create one below.'));
-          }
-          return ListView.separated(
-            itemCount: buckets.length,
-            separatorBuilder: (_, _) => const Divider(height: 1),
-            itemBuilder: (context, i) {
-              final b = buckets[i];
-              return ListTile(
-                leading: const Icon(Icons.inventory_2_outlined),
-                title: Text(b.name),
-                subtitle: b.creationDate == null
-                    ? null
-                    : Text('Created ${b.creationDate!.toLocal()}'),
-                trailing: IconButton(
-                  icon: const Icon(Icons.delete_outline),
-                  tooltip: 'Delete bucket',
-                  onPressed: () => _deleteBucket(b.name),
-                ),
-                onTap: () =>
-                    context.push('/browse/${widget.accountId}/${b.name}'),
+                ],
               );
             },
-          );
-        },
+          ),
+        ),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: _createBucket,
-        icon: const Icon(Icons.add),
+        icon: const Icon(Icons.add_rounded),
         label: const Text('Bucket'),
+      ),
+    );
+  }
+}
+
+class _AccountStrip extends StatelessWidget {
+  final S3Account account;
+  const _AccountStrip({required this.account});
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Glass(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      radius: 16,
+      child: Row(
+        children: [
+          Icon(Icons.cloud_done_rounded, size: 18, color: scheme.primary),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              '${account.provider.label} • ${account.endpoint}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12.5,
+                color: scheme.onSurface.withValues(alpha: 0.7),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

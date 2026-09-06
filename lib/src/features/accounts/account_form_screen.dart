@@ -1,4 +1,4 @@
-// Add / edit account form with provider presets + connection test.
+// Add / edit account form: provider chips + glass sections.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/s3/s3_account.dart';
 import '../../core/storage/account_store.dart';
+import '../../ui/glass.dart';
 
 class AccountFormScreen extends ConsumerStatefulWidget {
   final String? accountId;
@@ -30,6 +31,7 @@ class _AccountFormState extends ConsumerState<AccountFormScreen> {
   bool _obscureSecret = true;
   bool _testing = false;
   String? _testResult;
+  bool _testOk = false;
   bool _initialized = false;
 
   @override
@@ -110,13 +112,17 @@ class _AccountFormState extends ConsumerState<AccountFormScreen> {
     setState(() {
       _testing = true;
       _testResult = null;
+      _testOk = false;
     });
     try {
       final draft = _buildAccount(widget.accountId ?? 'draft');
       final count = await ref
           .read(accountStoreProvider.notifier)
           .testConnection(draft);
-      setState(() => _testResult = 'Connected — $count bucket(s) found.');
+      setState(() {
+        _testOk = true;
+        _testResult = 'Connected — $count bucket(s) found.';
+      });
     } catch (e) {
       setState(() => _testResult = 'Failed: $e');
     } finally {
@@ -154,157 +160,219 @@ class _AccountFormState extends ConsumerState<AccountFormScreen> {
     _initFromAccount(existing);
 
     return Scaffold(
+      extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: Text(widget.accountId == null ? 'Add account' : 'Edit account'),
+        title: Text(
+          widget.accountId == null ? 'Add account' : 'Edit account',
+          style: const TextStyle(fontWeight: FontWeight.w800),
+        ),
       ),
-      body: Form(
-        key: _formKey,
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            DropdownButtonFormField<ProviderType>(
-              initialValue: _provider,
-              decoration: const InputDecoration(
-                labelText: 'Provider',
-                border: OutlineInputBorder(),
-              ),
-              items: ProviderType.values
-                  .map((p) => DropdownMenuItem(value: p, child: Text(p.label)))
-                  .toList(),
-              onChanged: (p) {
-                if (p != null) _applyPreset(p);
-              },
-            ),
-            const SizedBox(height: 8),
-            Text(_preset.help, style: Theme.of(context).textTheme.bodySmall),
-            const SizedBox(height: 16),
-            TextFormField(
-              controller: _name,
-              decoration: const InputDecoration(
-                labelText: 'Display name',
-                border: OutlineInputBorder(),
-              ),
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? 'Required' : null,
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _endpoint,
-              decoration: InputDecoration(
-                labelText: 'Endpoint',
-                hintText: _preset.hint,
-                border: const OutlineInputBorder(),
-              ),
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? 'Required' : null,
-            ),
-            const SizedBox(height: 12),
-            Row(
+      body: AppBackground(
+        child: SafeArea(
+          child: Form(
+            key: _formKey,
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
               children: [
-                Expanded(
-                  child: TextFormField(
-                    controller: _region,
-                    decoration: const InputDecoration(
-                      labelText: 'Region',
-                      border: OutlineInputBorder(),
-                    ),
-                    validator: (v) =>
-                        (v == null || v.trim().isEmpty) ? 'Required' : null,
+                const SectionLabel('Provider'),
+                Glass(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          for (final p in ProviderType.values)
+                            ChoiceChip(
+                              label: Text(p.label),
+                              avatar: ProviderBadge(provider: p, size: 22),
+                              selected: _provider == p,
+                              onSelected: (_) => _applyPreset(p),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        _preset.help,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: TextFormField(
-                    controller: _port,
-                    keyboardType: TextInputType.number,
-                    decoration: const InputDecoration(
-                      labelText: 'Port (optional)',
-                      border: OutlineInputBorder(),
-                    ),
+                const SectionLabel('Connection'),
+                Glass(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    children: [
+                      TextFormField(
+                        controller: _name,
+                        decoration: const InputDecoration(
+                          labelText: 'Display name',
+                          prefixIcon: Icon(Icons.label_outline_rounded),
+                        ),
+                        validator: (v) =>
+                            (v == null || v.trim().isEmpty) ? 'Required' : null,
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: _endpoint,
+                        decoration: InputDecoration(
+                          labelText: 'Endpoint',
+                          hintText: _preset.hint,
+                          prefixIcon: const Icon(Icons.dns_outlined),
+                        ),
+                        validator: (v) =>
+                            (v == null || v.trim().isEmpty) ? 'Required' : null,
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: TextFormField(
+                              controller: _region,
+                              decoration: const InputDecoration(
+                                labelText: 'Region',
+                              ),
+                              validator: (v) => (v == null || v.trim().isEmpty)
+                                  ? 'Required'
+                                  : null,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            child: TextFormField(
+                              controller: _port,
+                              keyboardType: TextInputType.number,
+                              decoration: const InputDecoration(
+                                labelText: 'Port (optional)',
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
                   ),
                 ),
+                const SectionLabel('Credentials'),
+                Glass(
+                  padding: const EdgeInsets.all(14),
+                  child: Column(
+                    children: [
+                      TextFormField(
+                        controller: _accessKey,
+                        decoration: const InputDecoration(
+                          labelText: 'Access key',
+                          prefixIcon: Icon(Icons.key_outlined),
+                        ),
+                        validator: (v) =>
+                            (v == null || v.trim().isEmpty) ? 'Required' : null,
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: _secretKey,
+                        obscureText: _obscureSecret,
+                        decoration: InputDecoration(
+                          labelText: 'Secret key',
+                          prefixIcon: const Icon(Icons.lock_outline_rounded),
+                          suffixIcon: IconButton(
+                            icon: Icon(
+                              _obscureSecret
+                                  ? Icons.visibility_outlined
+                                  : Icons.visibility_off_outlined,
+                            ),
+                            onPressed: () => setState(
+                              () => _obscureSecret = !_obscureSecret,
+                            ),
+                          ),
+                        ),
+                        validator: (v) =>
+                            (v == null || v.isEmpty) ? 'Required' : null,
+                      ),
+                      const SizedBox(height: 12),
+                      TextFormField(
+                        controller: _sessionToken,
+                        decoration: const InputDecoration(
+                          labelText: 'Session token (optional, STS)',
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SectionLabel('Options'),
+                Glass(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 4,
+                  ),
+                  child: Column(
+                    children: [
+                      SwitchListTile(
+                        title: const Text('Path-style addressing'),
+                        subtitle: const Text('Required for MinIO/R2/IP hosts.'),
+                        value: _pathStyle,
+                        onChanged: (v) => setState(() => _pathStyle = v),
+                      ),
+                      SwitchListTile(
+                        title: const Text('Use SSL (https)'),
+                        subtitle: const Text(
+                          'Disable for plain-HTTP dev servers.',
+                        ),
+                        value: _useSSL,
+                        onChanged: (v) => setState(() => _useSSL = v),
+                      ),
+                    ],
+                  ),
+                ),
+                if (_testResult != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Glass(
+                      padding: const EdgeInsets.all(12),
+                      child: Row(
+                        children: [
+                          Icon(
+                            _testOk
+                                ? Icons.check_circle_rounded
+                                : Icons.error_outline_rounded,
+                            color: _testOk ? Colors.green : Colors.red,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(child: Text(_testResult!)),
+                        ],
+                      ),
+                    ),
+                  ),
+                const SizedBox(height: 20),
+                Row(
+                  children: [
+                    Expanded(
+                      child: GlowButton(
+                        label: 'Test',
+                        icon: Icons.bolt_outlined,
+                        filled: false,
+                        onPressed: _testing ? null : _test,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: GlowButton(
+                        label: 'Save',
+                        icon: Icons.check_rounded,
+                        onPressed: _save,
+                      ),
+                    ),
+                  ],
+                ),
+                if (_testing)
+                  const Padding(
+                    padding: EdgeInsets.only(top: 12),
+                    child: Center(child: CircularProgressIndicator()),
+                  ),
               ],
             ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _accessKey,
-              decoration: const InputDecoration(
-                labelText: 'Access key',
-                border: OutlineInputBorder(),
-              ),
-              validator: (v) =>
-                  (v == null || v.trim().isEmpty) ? 'Required' : null,
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _secretKey,
-              obscureText: _obscureSecret,
-              decoration: InputDecoration(
-                labelText: 'Secret key',
-                border: const OutlineInputBorder(),
-                suffixIcon: IconButton(
-                  icon: Icon(
-                    _obscureSecret ? Icons.visibility : Icons.visibility_off,
-                  ),
-                  onPressed: () =>
-                      setState(() => _obscureSecret = !_obscureSecret),
-                ),
-              ),
-              validator: (v) => (v == null || v.isEmpty) ? 'Required' : null,
-            ),
-            const SizedBox(height: 12),
-            TextFormField(
-              controller: _sessionToken,
-              decoration: const InputDecoration(
-                labelText: 'Session token (optional for STS)',
-                border: OutlineInputBorder(),
-              ),
-            ),
-            SwitchListTile(
-              title: const Text('Path-style addressing'),
-              subtitle: const Text(
-                'Required for MinIO/R2/IP hosts. Try toggling if listing fails.',
-              ),
-              value: _pathStyle,
-              onChanged: (v) => setState(() => _pathStyle = v),
-            ),
-            SwitchListTile(
-              title: const Text('Use SSL (https)'),
-              subtitle: const Text(
-                'Disable for plain-HTTP dev servers (MinIO).',
-              ),
-              value: _useSSL,
-              onChanged: (v) => setState(() => _useSSL = v),
-            ),
-            if (_testResult != null)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                child: Text(_testResult!),
-              ),
-            Row(
-              children: [
-                Expanded(
-                  child: OutlinedButton(
-                    onPressed: _testing ? null : _test,
-                    child: _testing
-                        ? const SizedBox(
-                            height: 18,
-                            width: 18,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Text('Test connection'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: FilledButton(
-                    onPressed: _save,
-                    child: const Text('Save'),
-                  ),
-                ),
-              ],
-            ),
-          ],
+          ),
         ),
       ),
     );
