@@ -110,12 +110,13 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
   }
 
   Future<void> _upload() async {
-    final picked = await FilePicker.platform.pickFiles(allowMultiple: true);
-    if (picked == null || picked.files.isEmpty) return;
+    // file_picker v12: static API, returns List<PlatformFile> (empty = cancel).
+    final files = await FilePicker.pickFiles();
+    if (files.isEmpty) return;
     setState(() => _uploading = true);
     try {
       final manager = ref.read(transferManagerProvider.notifier);
-      for (final f in picked.files) {
+      for (final f in files) {
         final path = f.path;
         if (path == null) continue;
         await manager.enqueueUpload(
@@ -181,7 +182,10 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
         obj.key,
         expiresSeconds: 3600,
       );
-      await Share.share(url.toString(), subject: obj.name);
+      // share_plus v13 API (Share deprecated since v11).
+      await SharePlus.instance.share(
+        ShareParams(text: url.toString(), subject: obj.name),
+      );
     } finally {
       client.close();
     }
