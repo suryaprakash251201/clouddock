@@ -1,0 +1,67 @@
+name: iOS
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # needed to attach the unsigned .app bundle to Releases on tags
+
+env:
+  FLUTTER_VERSION: "3.47.2"
+
+jobs:
+  build:
+    name: Build iOS (no codesign)
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Pub get
+        run: flutter pub get
+
+      - name: CocoaPods repo update (best effort)
+        run: |
+          cd ios
+          pod repo update || true
+          cd ..
+
+      # Unsigned build for CI verification. Signed TestFlight/Store builds
+      # require Apple signing secrets (see README "Device builds").
+      - name: Build iOS (release, no codesign)
+        run: flutter build ios --release --no-codesign
+
+      - name: Package unsigned .app
+        run: |
+          APP_PATH=$(find build/ios/iphoneos -maxdepth 1 -name "*.app" | head -1)
+          echo "APP_PATH=$APP_PATH"
+          test -n "$APP_PATH"
+          tar -czf clouddock-ios-unsigned.tar.gz -C build/ios/iphoneos "$(basename "$APP_PATH")"
+
+      - name: Upload iOS artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clouddock-ios-unsigned-${{ github.ref_name }}
+          path: clouddock-ios-unsigned.tar.gz
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: clouddock-ios-unsigned.tar.gz
