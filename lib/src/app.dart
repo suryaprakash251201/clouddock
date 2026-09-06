@@ -9,6 +9,10 @@ import 'features/browser/browser_screen.dart';
 import 'features/buckets/buckets_screen.dart';
 import 'features/settings/settings_screen.dart';
 import 'features/transfers/transfers_screen.dart';
+import 'features/viewers/image_viewer_screen.dart';
+import 'features/viewers/pdf_viewer_screen.dart';
+import 'features/viewers/text_editor_screen.dart';
+import 'features/viewers/video_player_screen.dart';
 
 final _router = GoRouter(
   initialLocation: '/',
@@ -38,6 +42,50 @@ final _router = GoRouter(
         GoRoute(
           path: 'transfers',
           builder: (context, state) => const TransfersScreen(),
+        ),
+        GoRoute(
+          path: 'view/image',
+          builder: (context, state) {
+            final q = state.uri.queryParameters;
+            return ImageViewerScreen(
+              accountId: q['accountId']!,
+              bucket: q['bucket']!,
+              objectKey: q['key']!,
+            );
+          },
+        ),
+        GoRoute(
+          path: 'view/text',
+          builder: (context, state) {
+            final q = state.uri.queryParameters;
+            return TextEditorScreen(
+              accountId: q['accountId']!,
+              bucket: q['bucket']!,
+              objectKey: q['key']!,
+            );
+          },
+        ),
+        GoRoute(
+          path: 'view/pdf',
+          builder: (context, state) {
+            final q = state.uri.queryParameters;
+            return PdfViewerScreen(
+              accountId: q['accountId']!,
+              bucket: q['bucket']!,
+              objectKey: q['key']!,
+            );
+          },
+        ),
+        GoRoute(
+          path: 'view/video',
+          builder: (context, state) {
+            final q = state.uri.queryParameters;
+            return VideoPlayerScreen(
+              accountId: q['accountId']!,
+              bucket: q['bucket']!,
+              objectKey: q['key']!,
+            );
+          },
         ),
         GoRoute(
           path: 'settings',

@@ -29,6 +29,11 @@ Grab the latest signed builds from
   filter, new folder, upload (single PUT ≤ 8 MB, multipart above), download
   with progress, rename (copy+delete), delete, 1-hour presigned share links,
   object details sheet.
+- **In-app viewers** (tap a file to open):
+  - Images (zoomable) — jpg/png/gif/webp/bmp/heic
+  - Text editor (edit + save back to S3, 2 MB edit cap) — txt/md/json/xml/csv/log/yaml/code
+  - PDF viewer (PDFium, text selection) — pdf
+  - Video player (presigned-URL streaming + fullscreen) — mp4/mov/webm/mkv
 - **Transfers**: foreground queue with progress, cancel, clear-finished,
   open-downloaded-file.
 - **Settings**: security note + provider tips.

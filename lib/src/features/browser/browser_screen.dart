@@ -3,6 +3,7 @@
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:share_plus/share_plus.dart';
@@ -11,6 +12,7 @@ import '../../core/s3/s3_client.dart';
 import '../../core/s3/s3_models.dart';
 import '../../core/storage/account_store.dart';
 import '../transfers/transfer_manager.dart';
+import '../viewers/viewer_kind.dart';
 
 class BrowserScreen extends ConsumerStatefulWidget {
   final String accountId;
@@ -315,6 +317,33 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
     }
   }
 
+  /// Open with the matching in-app viewer, or fall back to the action sheet.
+  Future<void> _openObject(S3Object obj) async {
+    final kind = viewerKindForKey(obj.key);
+    if (kind == null) {
+      _showObjectSheet(obj);
+      return;
+    }
+    final route = switch (kind) {
+      ViewerKind.image => '/view/image',
+      ViewerKind.text => '/view/text',
+      ViewerKind.pdf => '/view/pdf',
+      ViewerKind.video => '/view/video',
+    };
+    final changed = await context.push<bool>(
+      Uri(
+        path: route,
+        queryParameters: {
+          'accountId': widget.accountId,
+          'bucket': widget.bucket,
+          'key': obj.key,
+        },
+      ).toString(),
+    );
+    // Text editor pops true after save → refresh the listing.
+    if (changed == true && mounted) _refresh();
+  }
+
   void _showObjectSheet(S3Object obj) {
     final date = obj.lastModified == null
         ? '—'
@@ -336,6 +365,15 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
               isThreeLine: true,
             ),
             const Divider(height: 1),
+            if (viewerKindForKey(obj.key) != null)
+              ListTile(
+                leading: const Icon(Icons.open_in_new_outlined),
+                title: const Text('Open'),
+                onTap: () {
+                  Navigator.pop(c);
+                  _openObject(obj);
+                },
+              ),
             ListTile(
               leading: const Icon(Icons.download_outlined),
               title: const Text('Download'),
@@ -533,7 +571,7 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
                   title: Text(obj.name),
                   subtitle: Text(formatBytes(obj.size)),
                   trailing: const Icon(Icons.more_vert),
-                  onTap: () => _showObjectSheet(obj),
+                  onTap: () => _openObject(obj),
                 );
               },
             ),
