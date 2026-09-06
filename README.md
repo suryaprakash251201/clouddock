@@ -15,7 +15,8 @@ Grab the latest signed builds from
 
 - **Android:** `app-release.apk` (direct install) and `app-release.aab`
   (Play Store upload) — built by the `Android` workflow on every `v*` tag.
-- **iOS:** unsigned `clouddock-ios-unsigned.tar.gz` for CI verification.
+- **iOS:** unsigned `clouddock-ios-unsigned.ipa` for CI verification
+  (re-sign to install; stock devices reject unsigned IPAs).
   Store/TestFlight distribution requires Apple signing (see below).
 
 ## Features (v1.0)
@@ -55,7 +56,7 @@ test/
 .github/workflows/
   ci.yml                        # analyze + format + test
   android.yml                   # release APK + AAB, attaches to v* releases
-  ios.yml                       # unsigned release .app (macos runner)
+  ios.yml                   # unsigned release IPA (macos runner)
   security.yml                  # dependency-review + Gitleaks + OSV + Trivy
 ```
 
