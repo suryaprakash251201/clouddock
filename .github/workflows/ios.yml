@@ -62,7 +62,7 @@ jobs:
           unzip -l "${{ env.IPA_NAME }}" | head -8
 
       - name: Upload IPA artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: clouddock-ios-ipa-${{ github.ref_name }}
           path: ${{ env.IPA_NAME }}
