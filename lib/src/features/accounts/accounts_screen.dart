@@ -94,7 +94,7 @@ class AccountsScreen extends ConsumerWidget {
           }
           return ListView.separated(
             itemCount: accounts.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
+            separatorBuilder: (_, _) => const Divider(height: 1),
             itemBuilder: (context, i) {
               final a = accounts[i];
               return ListTile(

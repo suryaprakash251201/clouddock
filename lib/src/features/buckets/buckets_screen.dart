@@ -168,7 +168,7 @@ class _BucketsState extends ConsumerState<BucketsScreen> {
           }
           return ListView.separated(
             itemCount: buckets.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
+            separatorBuilder: (_, _) => const Divider(height: 1),
             itemBuilder: (context, i) {
               final b = buckets[i];
               return ListTile(

@@ -236,7 +236,7 @@ class S3Client {
       'prefix': prefix,
       'delimiter': delimiter,
       'max-keys': '$maxKeys',
-      if (continuationToken != null) 'continuation-token': continuationToken,
+      'continuation-token': ?continuationToken,
     };
     final resp = await _signed('GET', buildUri(bucket: bucket, query: query));
     final doc = XmlDocument.parse(resp.body);
@@ -326,7 +326,7 @@ class S3Client {
     await _signedStream(
       'PUT',
       buildUri(bucket: bucket, key: key),
-      extraHeaders: {if (contentType != null) 'content-type': contentType},
+      extraHeaders: {'content-type': ?contentType},
       body: Stream.value(bytes),
       contentLength: bytes.length,
       payloadHash: SigV4.sha256HexBytes(bytes),
@@ -442,7 +442,7 @@ class S3Client {
     final resp = await _signed(
       'POST',
       buildUri(bucket: bucket, key: key, query: {'uploads': ''}),
-      extraHeaders: {if (contentType != null) 'content-type': contentType},
+      extraHeaders: {'content-type': ?contentType},
     );
     final doc = XmlDocument.parse(resp.body);
     final id = doc.findAllElements('UploadId').firstOrNull?.innerText;

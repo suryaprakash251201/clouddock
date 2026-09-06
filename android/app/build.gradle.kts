@@ -6,7 +6,9 @@ plugins {
 
 android {
     namespace = "com.clouddock.clouddock"
-    compileSdk = flutter.compileSdkVersion
+    // 36+: required by flutter_plugin_android_lifecycle (via file_picker).
+    // Keep targetSdk on Flutter's default; compileSdk only opts into APIs.
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {

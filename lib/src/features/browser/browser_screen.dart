@@ -84,7 +84,7 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
         ? _prefix.substring(0, _prefix.length - 1)
         : _prefix;
     final idx = trimmed.lastIndexOf('/');
-    _enterPrefix(idx == -1 ? '' : '${trimmed.substring(0, idx + 1)}');
+    _enterPrefix(idx == -1 ? '' : trimmed.substring(0, idx + 1));
   }
 
   List<String> get _crumbs {
@@ -512,7 +512,7 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
             onRefresh: () async => _refresh(),
             child: ListView.separated(
               itemCount: prefixes.length + objects.length,
-              separatorBuilder: (_, __) => const Divider(height: 1),
+              separatorBuilder: (_, _) => const Divider(height: 1),
               itemBuilder: (context, i) {
                 if (i < prefixes.length) {
                   final p = prefixes[i];

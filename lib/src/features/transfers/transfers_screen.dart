@@ -32,7 +32,7 @@ class TransfersScreen extends ConsumerWidget {
           ? const Center(child: Text('No transfers yet.'))
           : ListView.separated(
               itemCount: tasks.length,
-              separatorBuilder: (_, __) => const Divider(height: 1),
+              separatorBuilder: (_, _) => const Divider(height: 1),
               itemBuilder: (context, i) {
                 final t = tasks[i];
                 return ListTile(

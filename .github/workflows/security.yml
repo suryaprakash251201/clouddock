@@ -18,6 +18,9 @@ concurrency:
   group: security-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  OSV_SCANNER_VERSION: "v2.5.1"
+
 jobs:
   dependency-review:
     name: Dependency review (PRs)
@@ -51,15 +54,21 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
-      - uses: google/osv-scanner-action@v2
-        with:
-          scan-args: |-
-            --lockfile=pubspec.lock
-            --format=sarif
-            --output=osv-results.sarif
-        continue-on-error: true
+      # google/osv-scanner-action has no stable version tag; install the
+      # pinned CLI release directly (supports pubspec.lock).
+      - name: Install osv-scanner
+        run: |
+          curl -sSL -o /tmp/osv-scanner \
+            "https://github.com/google/osv-scanner/releases/download/${{ env.OSV_SCANNER_VERSION }}/osv-scanner_linux_amd64"
+          chmod +x /tmp/osv-scanner
+          /tmp/osv-scanner --version
+      - name: Scan pubspec.lock
+        run: |
+          /tmp/osv-scanner scan -L pubspec.lock \
+            --format=sarif --output=osv-results.sarif || true
+          test -f osv-results.sarif
       - name: Upload OSV SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: osv-results.sarif
@@ -73,7 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Run Trivy (HIGH,CRITICAL)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           scan-type: fs
           scan-ref: .
@@ -83,7 +92,7 @@ jobs:
           ignore-unfixed: true
         continue-on-error: true
       - name: Upload Trivy SARIF
-        uses: github/codeql-action/upload-sarif@v3
+        uses: github/codeql-action/upload-sarif@v4
         if: always()
         with:
           sarif_file: trivy-results.sarif
