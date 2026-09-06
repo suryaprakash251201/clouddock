@@ -49,14 +49,14 @@ jobs:
         run: flutter build appbundle --release
 
       - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: clouddock-apk-${{ github.ref_name }}
           path: build/app/outputs/flutter-apk/app-release.apk
           if-no-files-found: error
 
       - name: Upload AAB artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: clouddock-aab-${{ github.ref_name }}
           path: build/app/outputs/bundle/release/app-release.aab
