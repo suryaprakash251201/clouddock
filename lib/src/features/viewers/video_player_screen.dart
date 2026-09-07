@@ -47,15 +47,29 @@ class _VideoPlayerState extends ConsumerState<VideoPlayerScreen> {
   }
 
   Future<void> _start() async {
-    setState(() {
-      _starting = true;
-      _error = null;
-    });
+    // Dispose any previous controllers before restarting.
+    final oldChewie = _chewie;
+    final oldVideo = _video;
+    _chewie = null;
+    _video = null;
+    try {
+      oldChewie?.dispose();
+    } catch (_) {}
+    try {
+      await oldVideo?.dispose();
+    } catch (_) {}
+    if (mounted) {
+      setState(() {
+        _starting = true;
+        _error = null;
+      });
+    }
     try {
       final account = ref.read(accountByIdProvider(widget.accountId));
       if (account == null) throw StateError('Account not found');
       final client = S3Client(account);
       // Pure signing (no network); long expiry for the streaming session.
+      // Regenerated on every (re)start so retries never reuse an expired URL.
       final url = client.presignedGet(
         widget.bucket,
         widget.objectKey,
@@ -64,7 +78,7 @@ class _VideoPlayerState extends ConsumerState<VideoPlayerScreen> {
       client.close();
 
       final video = VideoPlayerController.networkUrl(Uri.parse(url.toString()));
-      await video.initialize();
+      await video.initialize().timeout(const Duration(seconds: 30));
       final chewie = ChewieController(
         videoPlayerController: video,
         autoPlay: true,
@@ -74,7 +88,7 @@ class _VideoPlayerState extends ConsumerState<VideoPlayerScreen> {
       );
       if (!mounted) {
         chewie.dispose();
-        video.dispose();
+        await video.dispose();
         return;
       }
       setState(() {

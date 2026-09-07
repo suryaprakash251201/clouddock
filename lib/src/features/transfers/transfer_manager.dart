@@ -5,6 +5,7 @@
 
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mime/mime.dart';
@@ -49,6 +50,7 @@ class TransferTask {
     TransferStatus? status,
     double? progress,
     String? error,
+    bool clearError = false,
     int? totalBytes,
   }) => TransferTask(
     id: id,
@@ -59,18 +61,21 @@ class TransferTask {
     localPath: localPath,
     status: status ?? this.status,
     progress: progress ?? this.progress,
-    error: error ?? this.error,
+    error: clearError ? null : (error ?? this.error),
     totalBytes: totalBytes ?? this.totalBytes,
   );
 }
 
 const _multipartThreshold = 8 * 1024 * 1024; // 8 MB
 const _multipartPartSize = 8 * 1024 * 1024;
+const _maxConcurrent = 3;
 const _uuid = Uuid();
 
 class TransferManager extends StateNotifier<List<TransferTask>> {
   final Ref _ref;
   final Map<String, bool> _cancelFlags = {};
+  final Map<String, S3Client> _clients = {};
+  int _running = 0;
 
   TransferManager(this._ref) : super(const []);
 
@@ -91,9 +96,16 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
 
   void cancel(String id) {
     _cancelFlags[id] = true;
+    // Closing the per-task client aborts the in-flight HTTP request.
+    try {
+      _clients[id]?.close();
+    } catch (_) {
+      // best effort
+    }
     _update(id, (t) => t.copyWith(status: TransferStatus.canceled));
   }
 
+  /// Clear done + canceled, keep queued/running/failed for retry.
   void clearFinished() {
     state = state
         .where(
@@ -103,6 +115,67 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
               t.status == TransferStatus.failed,
         )
         .toList();
+  }
+
+  void clearFailed() {
+    final ids = state
+        .where((t) => t.status == TransferStatus.failed)
+        .map((t) => t.id)
+        .toSet();
+    _cancelFlags.removeWhere((k, _) => ids.contains(k));
+    state = state.where((t) => !ids.contains(t.id)).toList();
+  }
+
+  /// Re-run a single failed/canceled task.
+  Future<void> retry(String id) async {
+    TransferTask? task;
+    try {
+      task = state.firstWhere((t) => t.id == id);
+    } catch (_) {
+      return;
+    }
+    if (task.status != TransferStatus.failed &&
+        task.status != TransferStatus.canceled) {
+      return;
+    }
+    _cancelFlags.remove(id);
+    _update(
+      id,
+      (t) => t.copyWith(
+        status: TransferStatus.queued,
+        progress: 0,
+        clearError: true,
+      ),
+    );
+    unawaited(
+      task.type == TransferType.upload ? _runUpload(id) : _runDownload(id),
+    );
+  }
+
+  Future<void> retryAllFailed() async {
+    final ids = state
+        .where(
+          (t) =>
+              t.status == TransferStatus.failed ||
+              t.status == TransferStatus.canceled,
+        )
+        .map((t) => t.id)
+        .toList();
+    for (final id in ids) {
+      await retry(id);
+    }
+  }
+
+  Future<void> _acquireSlot(String id) async {
+    while (_running >= _maxConcurrent) {
+      _checkCancel(id);
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    _running++;
+  }
+
+  void _releaseSlot() {
+    _running = max(0, _running - 1);
   }
 
   S3Client _clientFor(String accountId) {
@@ -135,10 +208,20 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
   }
 
   Future<void> _runUpload(String id) async {
-    var task = state.firstWhere((t) => t.id == id);
-    final client = _clientFor(task.accountId);
+    TransferTask task;
     try {
-      _update(id, (t) => t.copyWith(status: TransferStatus.running));
+      task = state.firstWhere((t) => t.id == id);
+    } catch (_) {
+      return;
+    }
+    await _acquireSlot(id);
+    final client = _clientFor(task.accountId);
+    _clients[id] = client;
+    try {
+      _update(
+        id,
+        (t) => t.copyWith(status: TransferStatus.running, clearError: true),
+      );
       final file = File(task.localPath);
       final length = await file.length();
       _update(id, (t) => t.copyWith(totalBytes: length));
@@ -147,12 +230,14 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
       if (length <= _multipartThreshold) {
         final bytes = await file.readAsBytes();
         _checkCancel(id);
+        _update(id, (t) => t.copyWith(progress: 0.1));
         await client.putObject(
           task.bucket,
           task.key,
           bytes,
           contentType: contentType,
         );
+        _checkCancel(id);
         _update(
           id,
           (t) => t.copyWith(status: TransferStatus.done, progress: 1),
@@ -170,7 +255,11 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
         );
       }
     } finally {
-      client.close();
+      _clients.remove(id);
+      try {
+        client.close();
+      } catch (_) {}
+      _releaseSlot();
     }
   }
 
@@ -262,10 +351,20 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
   }
 
   Future<void> _runDownload(String id) async {
-    final task = state.firstWhere((t) => t.id == id);
-    final client = _clientFor(task.accountId);
+    TransferTask task;
     try {
-      _update(id, (t) => t.copyWith(status: TransferStatus.running));
+      task = state.firstWhere((t) => t.id == id);
+    } catch (_) {
+      return;
+    }
+    await _acquireSlot(id);
+    final client = _clientFor(task.accountId);
+    _clients[id] = client;
+    try {
+      _update(
+        id,
+        (t) => t.copyWith(status: TransferStatus.running, clearError: true),
+      );
       _checkCancel(id);
       await client.downloadToFile(
         task.bucket,
@@ -279,6 +378,11 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
       );
       if (_cancelFlags[id] == true) {
         _update(id, (t) => t.copyWith(status: TransferStatus.canceled));
+        // Remove partial temp output left by cancellation.
+        try {
+          final tmp = File('${task.localPath}.part');
+          if (await tmp.exists()) await tmp.delete();
+        } catch (_) {}
       } else {
         _update(
           id,
@@ -295,7 +399,11 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
         );
       }
     } finally {
-      client.close();
+      _clients.remove(id);
+      try {
+        client.close();
+      } catch (_) {}
+      _releaseSlot();
     }
   }
 }

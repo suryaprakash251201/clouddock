@@ -4,6 +4,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart' as crypto;
@@ -14,6 +15,12 @@ import 's3_account.dart';
 import 's3_exceptions.dart';
 import 's3_models.dart';
 import 'sigv4.dart';
+
+/// Timeouts and retry budget for all S3 calls.
+const _requestTimeout = Duration(seconds: 30);
+const _maxAttempts = 3;
+const _baseBackoffMs = 500;
+final _jitter = Random();
 
 class S3Client {
   final S3Account account;
@@ -36,32 +43,26 @@ class S3Client {
     Map<String, String> query = const {},
   }) {
     final scheme = account.useSSL ? 'https' : 'http';
-    var host = account.endpoint.trim();
-    // Strip any scheme the user pasted.
-    host = host.replaceFirst(RegExp(r'^https?://'), '');
-    // Split host:port if embedded.
-    String hostname = host;
-    int? port = account.port;
-    if (host.contains(':')) {
-      final parts = host.split(':');
-      if (parts.length == 2) {
-        hostname = parts[0];
-        port ??= int.tryParse(parts[1].split('/').first);
-      }
+    final parsed = _parseEndpoint(account.endpoint, account.port);
+    final hostname = parsed.host;
+    var port = parsed.port;
+    // Omit default ports so signing + Host header stay canonical.
+    if ((scheme == 'https' && port == 443) ||
+        (scheme == 'http' && port == 80)) {
+      port = null;
     }
-    hostname = hostname.split('/').first;
 
     final encodedKey = key == null || key.isEmpty ? '' : _encodeKey(key);
 
     if (bucket != null &&
         bucket.isNotEmpty &&
         !account.usePathStyle &&
-        !_isIp(hostname)) {
+        !_isIpOrLocal(hostname)) {
       // virtual-hosted
       return Uri(
         scheme: scheme,
         host: '$bucket.$hostname',
-        port: port ?? 0,
+        port: port,
         path: '/$encodedKey',
         queryParameters: query.isEmpty ? null : query,
       ).normalizePath();
@@ -73,20 +74,114 @@ class S3Client {
     return Uri(
       scheme: scheme,
       host: hostname,
-      port: port ?? 0,
+      port: port,
       path: path,
       queryParameters: query.isEmpty ? null : query,
     );
   }
 
-  static bool _isIp(String host) =>
-      RegExp(r'^(\d{1,3}\.){3}\d{1,3}$').hasMatch(host) || host.contains(':');
+  /// Split user-supplied endpoint into host + port.
+  /// Handles: "host", "host:9000", "https://host:9000/path",
+  /// "[::1]", "[::1]:9000", "2600::1" (bare IPv6, no port).
+  static ({String host, int? port}) _parseEndpoint(
+    String endpoint,
+    int? explicitPort,
+  ) {
+    var host = endpoint.trim();
+    host = host.replaceFirst(RegExp(r'^https?://'), '');
+    host = host.split('/').first.trim();
+    if (host.isEmpty) return (host: host, port: explicitPort);
+
+    // Bracketed IPv6: [::1] or [::1]:9000
+    if (host.startsWith('[')) {
+      final close = host.indexOf(']');
+      if (close != -1) {
+        final hostname = host.substring(0, close + 1);
+        final rest = host.substring(close + 1);
+        int? port = explicitPort;
+        if (rest.startsWith(':')) {
+          port ??= int.tryParse(rest.substring(1));
+        }
+        return (host: hostname, port: port);
+      }
+      return (host: host, port: explicitPort);
+    }
+
+    // Count colons: 0 = plain host, 1 = host:port candidate,
+    // >1 = bare IPv6 without port.
+    final colonCount = ':'.allMatches(host).length;
+    if (colonCount == 1) {
+      final idx = host.lastIndexOf(':');
+      final maybePort = int.tryParse(host.substring(idx + 1));
+      if (maybePort != null) {
+        return (host: host.substring(0, idx), port: explicitPort ?? maybePort);
+      }
+    }
+    return (host: host, port: explicitPort);
+  }
+
+  static bool _isIpOrLocal(String host) {
+    final h = host.toLowerCase();
+    if (h == 'localhost') return true;
+    if (RegExp(r'^(\d{1,3}\.){3}\d{1,3}$').hasMatch(h)) return true;
+    // IPv6 (bracketed or bare) contains multiple colons.
+    if (h.contains(':')) return true;
+    return false;
+  }
 
   /// Encode S3 key preserving '/' separators.
   static String _encodeKey(String key) => key
       .split('/')
       .map((s) => SigV4.encodeRfc3986(s, encodeSlash: true))
       .join('/');
+
+  // ---------- retry + transport ----------
+
+  static bool _isRetryable(Object e) {
+    if (e is SocketException || e is TimeoutException || e is HttpException) {
+      return true;
+    }
+    if (e is S3Exception) return e.retryable;
+    return false;
+  }
+
+  Future<T> _withRetry<T>(String op, Future<T> Function() fn) async {
+    Object last = StateError('unreachable');
+    for (var attempt = 1; attempt <= _maxAttempts; attempt++) {
+      try {
+        return await fn().timeout(_requestTimeout);
+      } on TimeoutException {
+        last = S3Exception.timeout(op);
+      } on SocketException catch (e) {
+        last = S3Exception.network(
+          e.message.isEmpty ? e.toString() : e.message,
+        );
+      } on HttpException catch (e) {
+        last = S3Exception.network(e.message);
+      } on http.ClientException catch (e) {
+        last = S3Exception.network(e.message);
+      } catch (e) {
+        last = e;
+      }
+      if (attempt == _maxAttempts || !_isRetryable(last)) {
+        if (last is Exception) throw last;
+        throw Exception('$last');
+      }
+      final backoff =
+          _baseBackoffMs * (1 << (attempt - 1)) + _jitter.nextInt(250);
+      await Future.delayed(Duration(milliseconds: backoff));
+    }
+    // Unreachable.
+    throw last is Exception ? last : Exception('$last');
+  }
+
+  XmlDocument _parseXml(String body, String op) {
+    try {
+      return XmlDocument.parse(body);
+    } catch (e) {
+      throw S3Exception.malformed('$op: ${e.toString().split('\n').first}');
+    }
+  }
 
   // ---------- low-level signed call ----------
 
@@ -100,7 +195,7 @@ class S3Client {
     final hash =
         payloadHash ??
         (body == null ? SigV4.emptyHash : SigV4.sha256HexBytes(body));
-    final signed = SigV4.signHeaders(
+    Map<String, String> sign() => SigV4.signHeaders(
       accessKey: account.accessKey,
       secretKey: account.secretKey,
       sessionToken: account.sessionToken,
@@ -114,14 +209,23 @@ class S3Client {
       },
       payloadHash: hash,
     );
-    final req = http.Request(method, uri)..headers.addAll(signed);
-    if (body != null) req.bodyBytes = body;
-    final streamed = await _http.send(req);
-    final resp = await http.Response.fromStream(streamed);
-    if (resp.statusCode >= 400) {
-      throw S3Exception.fromResponse(resp.statusCode, resp.body);
-    }
-    return resp;
+    return _withRetry('$method ${uri.path}', () async {
+      http.StreamedResponse streamed;
+      try {
+        // Rebuild + re-sign per attempt: http.Request is single-use and
+        // x-amz-date should stay fresh across backoff delays.
+        final req = http.Request(method, uri)..headers.addAll(sign());
+        if (body != null) req.bodyBytes = body;
+        streamed = await _http.send(req);
+      } on http.ClientException catch (e) {
+        throw S3Exception.network(e.message);
+      }
+      final resp = await http.Response.fromStream(streamed);
+      if (resp.statusCode >= 400) {
+        throw S3Exception.fromResponse(resp.statusCode, resp.body);
+      }
+      return resp;
+    });
   }
 
   Future<http.StreamedResponse> _signedStream(
@@ -146,9 +250,10 @@ class S3Client {
       },
       payloadHash: payloadHash,
     );
-    final req = http.Request(method, uri)..headers.addAll(signed);
-    http.BaseRequest toSend = req;
-    if (body != null) {
+    http.BaseRequest buildRequest() {
+      if (body == null) {
+        return http.Request(method, uri)..headers.addAll(signed);
+      }
       final streamedReq = http.StreamedRequest(method, uri)
         ..headers.addAll(signed);
       if (contentLength != null) {
@@ -161,14 +266,32 @@ class S3Client {
         onError: (Object e, StackTrace st) => streamedReq.sink.close(),
         cancelOnError: true,
       );
-      toSend = streamedReq;
+      return streamedReq;
     }
-    final streamed = await _http.send(toSend);
-    if (streamed.statusCode >= 400) {
-      final text = await streamed.stream.bytesToString();
-      throw S3Exception.fromResponse(streamed.statusCode, text);
+
+    // Note: streaming bodies are not retried mid-stream (non-idempotent
+    // single-shot streams). Retries apply to connection setup failures
+    // surfaced as S3Exception.network/timeout by the caller.
+    try {
+      final streamed = await _http
+          .send(buildRequest())
+          .timeout(_requestTimeout);
+      if (streamed.statusCode >= 400) {
+        final text = await streamed.stream.bytesToString().timeout(
+          const Duration(seconds: 10),
+        );
+        throw S3Exception.fromResponse(streamed.statusCode, text);
+      }
+      return streamed;
+    } on TimeoutException {
+      throw S3Exception.timeout('$method ${uri.path}');
+    } on SocketException catch (e) {
+      throw S3Exception.network(e.message.isEmpty ? e.toString() : e.message);
+    } on HttpException catch (e) {
+      throw S3Exception.network(e.message);
+    } on http.ClientException catch (e) {
+      throw S3Exception.network(e.message);
     }
-    return streamed;
   }
 
   // ---------- buckets ----------
@@ -176,7 +299,7 @@ class S3Client {
   Future<List<S3Bucket>> listBuckets() async {
     final uri = buildUri();
     final resp = await _signed('GET', uri);
-    final doc = XmlDocument.parse(resp.body);
+    final doc = _parseXml(resp.body, 'ListBuckets');
     return doc
         .findAllElements('Bucket')
         .map((e) {
@@ -222,6 +345,45 @@ class S3Client {
     }
   }
 
+  /// HEAD object to fetch size / etag without downloading the body.
+  /// Returns null when the object does not exist.
+  Future<S3Object?> headObject(String bucket, String key) async {
+    try {
+      final uri = buildUri(bucket: bucket, key: key);
+      final hash = SigV4.emptyHash;
+      Map<String, String> sign() => SigV4.signHeaders(
+        accessKey: account.accessKey,
+        secretKey: account.secretKey,
+        sessionToken: account.sessionToken,
+        region: account.region,
+        service: _service,
+        method: 'HEAD',
+        uri: uri,
+        payloadHash: hash,
+      );
+      final streamed = await _withRetry('HEAD $key', () async {
+        try {
+          final req = http.Request('HEAD', uri)..headers.addAll(sign());
+          return await _http.send(req);
+        } on http.ClientException catch (e) {
+          throw S3Exception.network(e.message);
+        }
+      });
+      await streamed.stream.drain();
+      if (streamed.statusCode == 404) return null;
+      if (streamed.statusCode >= 400) {
+        throw S3Exception.fromResponse(streamed.statusCode, 'HEAD $key');
+      }
+      final length =
+          int.tryParse(streamed.headers['content-length'] ?? '') ?? 0;
+      final etag = streamed.headers['etag']?.replaceAll('"', '');
+      return S3Object(key: key, size: length, etag: etag);
+    } on S3Exception catch (e) {
+      if (e.statusCode == 404) return null;
+      rethrow;
+    }
+  }
+
   // ---------- objects ----------
 
   Future<ListObjectsResult> listObjectsV2(
@@ -239,7 +401,7 @@ class S3Client {
       'continuation-token': ?continuationToken,
     };
     final resp = await _signed('GET', buildUri(bucket: bucket, query: query));
-    final doc = XmlDocument.parse(resp.body);
+    final doc = _parseXml(resp.body, 'ListObjectsV2');
 
     String? text(String tag) {
       final els = doc.findAllElements(tag);
@@ -338,7 +500,8 @@ class S3Client {
     return _signedStream('GET', buildUri(bucket: bucket, key: key));
   }
 
-  /// Download to [savePath] with optional progress callback (0..1, -1 if unknown).
+  /// Download to [savePath] atomically (`.part` + rename) with optional
+  /// progress callback (0..1). Cleans up the temp file on failure.
   Future<File> downloadToFile(
     String bucket,
     String key,
@@ -349,16 +512,34 @@ class S3Client {
     final total = stream.contentLength ?? -1;
     final file = File(savePath);
     await file.parent.create(recursive: true);
-    final sink = file.openWrite();
-    var received = 0;
-    await for (final chunk in stream.stream) {
-      sink.add(chunk);
-      received += chunk.length;
-      if (onProgress != null && total > 0) {
-        onProgress(received / total);
-      }
+    final tmp = File('$savePath.part');
+    // Remove any stale temp file from a previous interrupted download.
+    try {
+      if (await tmp.exists()) await tmp.delete();
+    } catch (_) {
+      // best effort
     }
-    await sink.close();
+    final sink = tmp.openWrite();
+    var received = 0;
+    try {
+      await for (final chunk in stream.stream) {
+        sink.add(chunk);
+        received += chunk.length;
+        if (onProgress != null && total > 0) {
+          onProgress(received / total);
+        }
+      }
+      await sink.close();
+      await tmp.rename(savePath);
+    } catch (_) {
+      try {
+        await sink.close();
+      } catch (_) {}
+      try {
+        if (await tmp.exists()) await tmp.delete();
+      } catch (_) {}
+      rethrow;
+    }
     onProgress?.call(1.0);
     return file;
   }
@@ -444,7 +625,7 @@ class S3Client {
       buildUri(bucket: bucket, key: key, query: {'uploads': ''}),
       extraHeaders: {'content-type': ?contentType},
     );
-    final doc = XmlDocument.parse(resp.body);
+    final doc = _parseXml(resp.body, 'CreateMultipartUpload');
     final id = doc.findAllElements('UploadId').firstOrNull?.innerText;
     if (id == null || id.isEmpty) {
       throw const S3Exception('No UploadId in CreateMultipartUpload response');

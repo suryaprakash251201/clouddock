@@ -1,5 +1,7 @@
 // Object browser: folder navigation, upload/download, share, CRUD.
 
+import 'dart:async';
+
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -36,6 +38,12 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
   late Future<ListObjectsResult> _future;
   String _filter = '';
   bool _uploading = false;
+  bool _loadingMore = false;
+  Timer? _filterDebounce;
+  final _filterController = TextEditingController();
+
+  // Sort: 0 = name, 1 = size desc, 2 = newest first.
+  int _sort = 0;
 
   @override
   void initState() {
@@ -44,37 +52,94 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
     _future = _load();
   }
 
+  @override
+  void dispose() {
+    _filterDebounce?.cancel();
+    _filterController.dispose();
+    super.dispose();
+  }
+
+  void _onFilterChanged(String v) {
+    _filterDebounce?.cancel();
+    _filterDebounce = Timer(const Duration(milliseconds: 300), () {
+      if (mounted) setState(() => _filter = v.toLowerCase());
+    });
+  }
+
   Future<ListObjectsResult> _load() async {
     final account = ref.read(accountByIdProvider(widget.accountId));
     if (account == null) throw StateError('Account not found');
     final client = S3Client(account);
     try {
-      // Load first page; paginate on demand via "load more" is V2.
-      // For now pull up to ~3 pages to keep UX simple.
-      var result = await client.listObjectsV2(widget.bucket, prefix: _prefix);
-      if (result.isTruncated && result.nextContinuationToken != null) {
-        final second = await client.listObjectsV2(
-          widget.bucket,
-          prefix: _prefix,
-          continuationToken: result.nextContinuationToken,
-        );
-        result = ListObjectsResult(
-          prefixes: [...result.prefixes, ...second.prefixes],
-          objects: [...result.objects, ...second.objects],
-          isTruncated: second.isTruncated,
-          nextContinuationToken: second.nextContinuationToken,
-          prefix: _prefix,
-        ).sorted();
-      }
-      return result;
+      return await client.listObjectsV2(widget.bucket, prefix: _prefix);
     } finally {
       client.close();
     }
   }
 
+  Future<void> _loadMore(ListObjectsResult current) async {
+    final token = current.nextContinuationToken;
+    if (current.isTruncated != true || token == null || _loadingMore) return;
+    setState(() => _loadingMore = true);
+    try {
+      final account = ref.read(accountByIdProvider(widget.accountId));
+      if (account == null) return;
+      final client = S3Client(account);
+      try {
+        final next = await client.listObjectsV2(
+          widget.bucket,
+          prefix: _prefix,
+          continuationToken: token,
+        );
+        if (!mounted) return;
+        final merged = ListObjectsResult(
+          prefixes: [...current.prefixes, ...next.prefixes],
+          objects: [...current.objects, ...next.objects],
+          isTruncated: next.isTruncated,
+          nextContinuationToken: next.nextContinuationToken,
+          prefix: _prefix,
+        ).sorted();
+        setState(() => _future = Future.value(merged));
+      } finally {
+        client.close();
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Load more failed: $e')));
+      }
+    } finally {
+      if (mounted) setState(() => _loadingMore = false);
+    }
+  }
+
+  List<S3Object> _sortedObjects(List<S3Object> objects) {
+    final list = List<S3Object>.of(objects);
+    switch (_sort) {
+      case 1:
+        list.sort((a, b) => b.size.compareTo(a.size));
+      case 2:
+        list.sort((a, b) {
+          final am = a.lastModified;
+          final bm = b.lastModified;
+          if (am == null && bm == null) return 0;
+          if (am == null) return 1;
+          if (bm == null) return -1;
+          return bm.compareTo(am);
+        });
+      default:
+        list.sort(
+          (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+        );
+    }
+    return list;
+  }
+
   void _refresh() => setState(() => _future = _load());
 
   void _enterPrefix(String prefix) {
+    _filterDebounce?.cancel();
+    _filterController.clear();
     setState(() {
       _prefix = prefix;
       _filter = '';
@@ -114,14 +179,17 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
   }
 
   Future<void> _upload() async {
-    // file_picker v12: static API, returns List<PlatformFile> (empty = cancel).
-    final files = await FilePicker.pickFiles();
+    // file_picker v12: static API returns nullable List<PlatformFile>.
+    final dynamic picked = await FilePicker.pickFiles();
+    if (picked == null) return;
+    final List files = picked is List ? picked : (picked.files as List);
     if (files.isEmpty) return;
     setState(() => _uploading = true);
     try {
       final manager = ref.read(transferManagerProvider.notifier);
+      var queued = 0;
       for (final f in files) {
-        final path = f.path;
+        final path = (f as dynamic).path as String?;
         if (path == null) continue;
         await manager.enqueueUpload(
           accountId: widget.accountId,
@@ -129,15 +197,13 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
           prefix: _prefix,
           localPath: path,
         );
+        queued++;
       }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Upload queued — see Transfers')),
+          SnackBar(content: Text('$queued upload(s) queued — see Transfers')),
         );
       }
-      // Refresh after a beat so small uploads appear.
-      await Future.delayed(const Duration(seconds: 2));
-      if (mounted) _refresh();
     } finally {
       if (mounted) setState(() => _uploading = false);
     }
@@ -159,11 +225,26 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
             action: SnackBarAction(
               label: 'Open file',
               onPressed: () async {
-                // Wait briefly then try to open the completed file.
-                await Future.delayed(const Duration(seconds: 1));
-                final tasks = ref.read(transferManagerProvider);
-                final task = tasks.firstWhere((t) => t.id == id);
-                await OpenFilex.open(task.localPath);
+                // Poll briefly for completion instead of a fixed delay.
+                for (var i = 0; i < 30; i++) {
+                  await Future.delayed(const Duration(seconds: 1));
+                  if (!mounted && !context.mounted) return;
+                  final tasks = ref.read(transferManagerProvider);
+                  TransferTask? task;
+                  try {
+                    task = tasks.firstWhere((t) => t.id == id);
+                  } catch (_) {
+                    return;
+                  }
+                  if (task.status == TransferStatus.done) {
+                    await OpenFilex.open(task.localPath);
+                    return;
+                  }
+                  if (task.status == TransferStatus.failed ||
+                      task.status == TransferStatus.canceled) {
+                    return;
+                  }
+                }
               },
             ),
           ),
@@ -417,6 +498,24 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // Auto-refresh listing when an upload for this bucket/prefix completes.
+    ref.listen<List<TransferTask>>(transferManagerProvider, (prev, next) {
+      if (!mounted) return;
+      final prevDone = {
+        for (final t in prev ?? const <TransferTask>[])
+          if (t.status == TransferStatus.done) t.id,
+      };
+      final newlyDone = next.where(
+        (t) =>
+            t.status == TransferStatus.done &&
+            !prevDone.contains(t.id) &&
+            t.type == TransferType.upload &&
+            t.accountId == widget.accountId &&
+            t.bucket == widget.bucket &&
+            t.key.startsWith(_prefix),
+      );
+      if (newlyDone.isNotEmpty) _refresh();
+    });
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
@@ -437,53 +536,72 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
           ),
         ],
         bottom: PreferredSize(
-          preferredSize: const Size.fromHeight(96),
+          preferredSize: const Size.fromHeight(132),
           child: Column(
             children: [
-              if (_prefix.isNotEmpty || true)
-                SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 4,
-                  ),
-                  child: Row(
-                    children: [
-                      ActionChip(
-                        label: Text(widget.bucket),
-                        avatar: const Icon(Icons.storage, size: 16),
-                        onPressed: () => _enterPrefix(''),
-                      ),
-                      for (var i = 0; i < _crumbs.length; i++) ...[
-                        const Text(' / '),
-                        ActionChip(
-                          label: Text(_crumbs[i]),
-                          onPressed: () => _enterPrefix(_prefixForCrumb(i)),
-                        ),
-                      ],
-                      if (_prefix.isNotEmpty) ...[
-                        const SizedBox(width: 8),
-                        IconButton(
-                          icon: const Icon(Icons.arrow_upward, size: 18),
-                          tooltip: 'Up one level',
-                          onPressed: _up,
-                        ),
-                      ],
-                    ],
-                  ),
+              SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 4,
                 ),
+                child: Row(
+                  children: [
+                    ActionChip(
+                      label: Text(widget.bucket),
+                      avatar: const Icon(Icons.storage, size: 16),
+                      onPressed: () => _enterPrefix(''),
+                    ),
+                    for (var i = 0; i < _crumbs.length; i++) ...[
+                      const Text(' / '),
+                      ActionChip(
+                        label: Text(_crumbs[i]),
+                        onPressed: () => _enterPrefix(_prefixForCrumb(i)),
+                      ),
+                    ],
+                    if (_prefix.isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      IconButton(
+                        icon: const Icon(Icons.arrow_upward, size: 18),
+                        tooltip: 'Up one level',
+                        onPressed: _up,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
               Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 12,
                   vertical: 4,
                 ),
-                child: TextField(
-                  decoration: const InputDecoration(
-                    hintText: 'Filter in this folder…',
-                    prefixIcon: Icon(Icons.search_rounded),
-                    isDense: true,
-                  ),
-                  onChanged: (v) => setState(() => _filter = v.toLowerCase()),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: _filterController,
+                        decoration: const InputDecoration(
+                          hintText: 'Filter in this folder…',
+                          prefixIcon: Icon(Icons.search_rounded),
+                          isDense: true,
+                        ),
+                        onChanged: _onFilterChanged,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    DropdownButton<int>(
+                      value: _sort,
+                      underline: const SizedBox.shrink(),
+                      items: const [
+                        DropdownMenuItem(value: 0, child: Text('Name')),
+                        DropdownMenuItem(value: 1, child: Text('Size')),
+                        DropdownMenuItem(value: 2, child: Text('Newest')),
+                      ],
+                      onChanged: (v) {
+                        if (v != null) setState(() => _sort = v);
+                      },
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -516,14 +634,16 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
                     (p) => _filter.isEmpty || p.toLowerCase().contains(_filter),
                   )
                   .toList();
-              final objects = result.objects
-                  .where(
-                    (o) =>
-                        _filter.isEmpty ||
-                        o.name.toLowerCase().contains(_filter) ||
-                        o.key.toLowerCase().contains(_filter),
-                  )
-                  .toList();
+              final objects = _sortedObjects(
+                result.objects
+                    .where(
+                      (o) =>
+                          _filter.isEmpty ||
+                          o.name.toLowerCase().contains(_filter) ||
+                          o.key.toLowerCase().contains(_filter),
+                    )
+                    .toList(),
+              );
               if (prefixes.isEmpty && objects.isEmpty) {
                 return EmptyState(
                   icon: Icons.folder_open_rounded,
@@ -556,6 +676,22 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
                         onTap: () => _openObject(obj),
                       ),
                       const SizedBox(height: 10),
+                    ],
+                    if (result.isTruncated) ...[
+                      const SizedBox(height: 4),
+                      Center(
+                        child: _loadingMore
+                            ? const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: CircularProgressIndicator(),
+                              )
+                            : OutlinedButton.icon(
+                                onPressed: () => _loadMore(result),
+                                icon: const Icon(Icons.expand_more_rounded),
+                                label: const Text('Load more'),
+                              ),
+                      ),
+                      const SizedBox(height: 8),
                     ],
                   ],
                 ),
@@ -592,7 +728,9 @@ class _FolderCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final name = prefix.substring(prefixBase.length).replaceAll('/', '');
+    final name = prefix.startsWith(prefixBase)
+        ? prefix.substring(prefixBase.length).replaceAll('/', '')
+        : prefix.replaceAll('/', '');
     return Glass(
       padding: const EdgeInsets.all(12),
       radius: 16,

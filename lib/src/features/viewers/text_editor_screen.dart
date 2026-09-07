@@ -11,6 +11,7 @@ import '../../core/s3/s3_client.dart';
 import '../../core/storage/account_store.dart';
 
 const _editLimit = 2 * 1024 * 1024; // 2 MB
+const _viewLimit = 10 * 1024 * 1024; // 10 MB view cap
 
 class TextEditorScreen extends ConsumerStatefulWidget {
   final String accountId;
@@ -47,8 +48,22 @@ class _TextEditorState extends ConsumerState<TextEditorScreen> {
     if (account == null) throw StateError('Account not found');
     final client = S3Client(account);
     try {
+      // HEAD first to avoid downloading huge files into memory.
+      final meta = await client.headObject(widget.bucket, widget.objectKey);
+      if (meta != null && meta.size > _viewLimit) {
+        throw StateError(
+          'File is ${(meta.size / 1048576).toStringAsFixed(1)} MB — '
+          'too large to view in-app. Use Download instead.',
+        );
+      }
       final resp = await client.getObject(widget.bucket, widget.objectKey);
       final bytes = await resp.stream.toBytes();
+      if (bytes.length > _viewLimit) {
+        throw StateError(
+          'File is ${(bytes.length / 1048576).toStringAsFixed(1)} MB — '
+          'too large to view in-app. Use Download instead.',
+        );
+      }
       final text = utf8.decode(bytes, allowMalformed: true);
       return (text: text, readOnly: bytes.length > _editLimit);
     } finally {

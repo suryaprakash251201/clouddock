@@ -24,6 +24,16 @@ class TransfersScreen extends ConsumerWidget {
         actions: [
           if (tasks.any(
             (t) =>
+                t.status == TransferStatus.failed ||
+                t.status == TransferStatus.canceled,
+          ))
+            TextButton(
+              onPressed: () =>
+                  ref.read(transferManagerProvider.notifier).retryAllFailed(),
+              child: const Text('Retry all'),
+            ),
+          if (tasks.any(
+            (t) =>
                 t.status == TransferStatus.done ||
                 t.status == TransferStatus.canceled,
           ))
@@ -130,6 +140,7 @@ class TransfersScreen extends ConsumerWidget {
                               TransferStatus.running ||
                               TransferStatus.queued => IconButton(
                                 icon: const Icon(Icons.cancel_outlined),
+                                tooltip: 'Cancel',
                                 onPressed: () => ref
                                     .read(transferManagerProvider.notifier)
                                     .cancel(t.id),
@@ -138,8 +149,17 @@ class TransfersScreen extends ConsumerWidget {
                                   when t.type == TransferType.download =>
                                 IconButton(
                                   icon: const Icon(Icons.open_in_new_rounded),
+                                  tooltip: 'Open file',
                                   onPressed: () => OpenFilex.open(t.localPath),
                                 ),
+                              TransferStatus.failed ||
+                              TransferStatus.canceled => IconButton(
+                                icon: const Icon(Icons.refresh_rounded),
+                                tooltip: 'Retry',
+                                onPressed: () => ref
+                                    .read(transferManagerProvider.notifier)
+                                    .retry(t.id),
+                              ),
                               _ => Icon(
                                 t.status == TransferStatus.done
                                     ? Icons.check_circle_rounded

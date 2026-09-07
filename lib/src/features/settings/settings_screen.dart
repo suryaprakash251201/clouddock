@@ -1,7 +1,11 @@
 // Settings + about: glass info cards.
 
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../core/storage/account_store.dart';
 import '../../ui/glass.dart';
@@ -71,10 +75,75 @@ class SettingsScreen extends ConsumerWidget {
                   style: TextStyle(fontSize: 13, height: 1.6),
                 ),
               ),
+              const SectionLabel('Diagnostics'),
+              Glass(
+                padding: const EdgeInsets.all(6),
+                child: Column(
+                  children: [
+                    ListTile(
+                      leading: const Icon(Icons.bug_report_outlined),
+                      title: const Text('Export error log'),
+                      subtitle: const Text(
+                        'Shares the on-device crash.log (no keys or file contents).',
+                      ),
+                      trailing: const Icon(Icons.share_outlined),
+                      onTap: () => _shareLog(context),
+                    ),
+                    ListTile(
+                      leading: const Icon(Icons.delete_outline_rounded),
+                      title: const Text('Clear error log'),
+                      onTap: () => _clearLog(context),
+                    ),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
       ),
     );
+  }
+
+  static Future<File> _logFile() async {
+    final dir = await getApplicationDocumentsDirectory();
+    return File('${dir.path}/CloudDock/crash.log');
+  }
+
+  static Future<void> _shareLog(BuildContext context) async {
+    try {
+      final file = await _logFile();
+      if (!await file.exists()) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(const SnackBar(content: Text('No errors logged yet')));
+        }
+        return;
+      }
+      await SharePlus.instance.share(
+        ShareParams(files: [XFile(file.path)], subject: 'CloudDock error log'),
+      );
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Export failed: $e')));
+      }
+    }
+  }
+
+  static Future<void> _clearLog(BuildContext context) async {
+    try {
+      final file = await _logFile();
+      if (await file.exists()) await file.delete();
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(const SnackBar(content: Text('Error log cleared')));
+      }
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('Clear failed: $e')));
+      }
+    }
   }
 }

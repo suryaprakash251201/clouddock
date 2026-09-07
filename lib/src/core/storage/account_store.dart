@@ -32,21 +32,30 @@ class AccountStore extends StateNotifier<AsyncValue<List<S3Account>>> {
         state = const AsyncValue.data([]);
         return;
       }
-      final list = (jsonDecode(raw) as List).cast<Map<String, dynamic>>();
-      final accounts = <S3Account>[];
-      for (final meta in list) {
-        final id = meta['id'] as String;
-        final secret = await _secure.read(key: _secretKey(id)) ?? '';
-        final token = await _secure.read(key: _tokenKey(id));
-        accounts.add(
-          S3Account.fromJson(
+      final decoded = jsonDecode(raw);
+      if (decoded is! List) throw const FormatException('Bad accounts JSON');
+      final list = decoded.whereType<Map>().map((e) {
+        return Map<String, dynamic>.from(e);
+      }).toList();
+      // Parallel secure-storage reads instead of sequential awaits.
+      final accounts = await Future.wait(
+        list.map((meta) async {
+          final id = meta['id'] as String? ?? '';
+          if (id.isEmpty) return null;
+          final results = await Future.wait([
+            _secure.read(key: _secretKey(id)),
+            _secure.read(key: _tokenKey(id)),
+          ]);
+          final secret = results[0] ?? '';
+          final token = results[1];
+          return S3Account.fromJson(
             meta,
             secretKey: secret,
             sessionToken: (token == null || token.isEmpty) ? null : token,
-          ),
-        );
-      }
-      state = AsyncValue.data(accounts);
+          );
+        }),
+      );
+      state = AsyncValue.data(accounts.whereType<S3Account>().toList());
     } catch (e, st) {
       state = AsyncValue.error(e, st);
     }
@@ -92,13 +101,27 @@ class AccountStore extends StateNotifier<AsyncValue<List<S3Account>>> {
     required bool useSSL,
     int? port,
   }) async {
+    final cleanName = name.trim();
+    final cleanEndpoint = endpoint
+        .trim()
+        .replaceFirst(RegExp(r'^https?://'), '')
+        .split('/')
+        .first;
+    final cleanAccess = accessKey.trim();
+    if (cleanName.isEmpty) throw ArgumentError('Account name is required');
+    if (cleanEndpoint.isEmpty) throw ArgumentError('Endpoint is required');
+    if (cleanAccess.isEmpty) throw ArgumentError('Access key is required');
+    if (secretKey.isEmpty) throw ArgumentError('Secret key is required');
+    if (port != null && (port < 1 || port > 65535)) {
+      throw ArgumentError('Port must be 1-65535');
+    }
     final account = S3Account(
       id: _uuid.v4(),
-      name: name.trim(),
+      name: cleanName,
       provider: provider,
-      endpoint: endpoint.trim(),
+      endpoint: cleanEndpoint,
       region: region.trim().isEmpty ? provider.defaultRegion : region.trim(),
-      accessKey: accessKey.trim(),
+      accessKey: cleanAccess,
       secretKey: secretKey,
       sessionToken: (sessionToken == null || sessionToken.trim().isEmpty)
           ? null
@@ -108,6 +131,8 @@ class AccountStore extends StateNotifier<AsyncValue<List<S3Account>>> {
       port: port,
     );
     final next = [..._current, account];
+    // Persist secrets first; only update in-memory state after prefs commit
+    // so a prefs failure doesn't leave a phantom account.
     await _persist(next);
     state = AsyncValue.data(next);
     return account;
