@@ -7,7 +7,6 @@ import 'package:go_router/go_router.dart';
 import '../../core/s3/s3_account.dart';
 import '../../core/storage/account_store.dart';
 import '../../ui/glass.dart';
-import '../transfers/transfer_manager.dart';
 
 class AccountsScreen extends ConsumerWidget {
   const AccountsScreen({super.key});
@@ -15,14 +14,6 @@ class AccountsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final accountsAsync = ref.watch(accountStoreProvider);
-    final transfers = ref.watch(transferManagerProvider);
-    final activeCount = transfers
-        .where(
-          (t) =>
-              t.status == TransferStatus.running ||
-              t.status == TransferStatus.queued,
-        )
-        .length;
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -31,36 +22,6 @@ class AccountsScreen extends ConsumerWidget {
           'CloudDock',
           style: TextStyle(fontWeight: FontWeight.w800, fontSize: 22),
         ),
-        actions: [
-          Stack(
-            alignment: Alignment.center,
-            children: [
-              IconButton(
-                icon: const Icon(Icons.sync_rounded),
-                tooltip: 'Transfers',
-                onPressed: () => context.push('/transfers'),
-              ),
-              if (activeCount > 0)
-                Positioned(
-                  right: 8,
-                  top: 8,
-                  child: CircleAvatar(
-                    radius: 9,
-                    child: Text(
-                      '$activeCount',
-                      style: const TextStyle(fontSize: 11),
-                    ),
-                  ),
-                ),
-            ],
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings_rounded),
-            tooltip: 'Settings',
-            onPressed: () => context.push('/settings'),
-          ),
-          const SizedBox(width: 4),
-        ],
       ),
       body: AppBackground(
         child: SafeArea(
@@ -76,7 +37,7 @@ class AccountsScreen extends ConsumerWidget {
                   action: GlowButton(
                     label: 'Add account',
                     icon: Icons.add_rounded,
-                    onPressed: () => context.push('/account'),
+                    onPressed: () => context.push('/s3/account'),
                   ),
                 );
               }
@@ -96,7 +57,7 @@ class AccountsScreen extends ConsumerWidget {
       ),
       floatingActionButton: accountsAsync.valueOrNull?.isNotEmpty == true
           ? FloatingActionButton.extended(
-              onPressed: () => context.push('/account'),
+              onPressed: () => context.push('/s3/account'),
               icon: const Icon(Icons.add_rounded),
               label: const Text('Add'),
             )
@@ -114,7 +75,7 @@ class _AccountCard extends ConsumerWidget {
     final scheme = Theme.of(context).colorScheme;
     return Glass(
       padding: const EdgeInsets.all(16),
-      onTap: () => context.push('/buckets/${account.id}'),
+      onTap: () => context.push('/s3/buckets/${account.id}'),
       child: Row(
         children: [
           ProviderBadge(provider: account.provider),
@@ -148,7 +109,7 @@ class _AccountCard extends ConsumerWidget {
             icon: const Icon(Icons.more_vert_rounded),
             onSelected: (v) async {
               if (v == 'edit') {
-                context.push('/account?id=${account.id}');
+                context.push('/s3/account?id=${account.id}');
               } else if (v == 'delete') {
                 final ok = await showDialog<bool>(
                   context: context,

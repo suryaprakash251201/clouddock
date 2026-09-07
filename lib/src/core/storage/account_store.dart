@@ -80,6 +80,9 @@ class AccountStore extends StateNotifier<AsyncValue<List<S3Account>>> {
 
   List<S3Account> get _current => state.valueOrNull ?? [];
 
+  /// Re-read accounts from disk (used by Home pull-to-refresh).
+  Future<void> refresh() => _load();
+
   S3Account? byId(String id) {
     try {
       return _current.firstWhere((a) => a.id == id);

@@ -10,11 +10,13 @@ import 'package:intl/intl.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../core/prefs/app_prefs.dart';
 import '../../core/s3/s3_client.dart';
 import '../../core/s3/s3_models.dart';
 import '../../core/storage/account_store.dart';
 import '../../ui/glass.dart';
 import '../../ui/theme.dart';
+import '../home/recent_files_store.dart';
 import '../transfers/transfer_manager.dart';
 import '../viewers/viewer_kind.dart';
 
@@ -260,12 +262,13 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
 
   Future<void> _shareLink(S3Object obj) async {
     final account = ref.read(accountByIdProvider(widget.accountId))!;
+    final expiry = ref.read(linkExpiryProvider);
     final client = S3Client(account);
     try {
       final url = client.presignedGet(
         widget.bucket,
         obj.key,
-        expiresSeconds: 3600,
+        expiresSeconds: expiry,
       );
       // share_plus v13 API (Share deprecated since v11).
       await SharePlus.instance.share(
@@ -402,6 +405,22 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
 
   /// Open with the matching in-app viewer, or fall back to the action sheet.
   Future<void> _openObject(S3Object obj) async {
+    // Record for Home → Recently opened (fire and forget).
+    final account = ref.read(accountByIdProvider(widget.accountId));
+    if (account != null) {
+      unawaited(
+        ref
+            .read(recentFilesProvider.notifier)
+            .record(
+              accountId: widget.accountId,
+              accountName: account.name,
+              bucket: widget.bucket,
+              key: obj.key,
+              name: obj.name,
+              size: obj.size,
+            ),
+      );
+    }
     final kind = viewerKindForKey(obj.key);
     if (kind == null) {
       _showObjectSheet(obj);
@@ -412,6 +431,7 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
       ViewerKind.text => '/view/text',
       ViewerKind.pdf => '/view/pdf',
       ViewerKind.video => '/view/video',
+      ViewerKind.audio => '/view/audio',
     };
     final changed = await context.push<bool>(
       Uri(
@@ -431,6 +451,7 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
     final date = obj.lastModified == null
         ? '—'
         : DateFormat.yMMMd().add_jm().format(obj.lastModified!.toLocal());
+    final expiryLabel = describeExpiry(ref.read(linkExpiryProvider));
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
@@ -467,7 +488,7 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
             ),
             ListTile(
               leading: const Icon(Icons.link_outlined),
-              title: const Text('Share link (1h)'),
+              title: Text('Share link ($expiryLabel)'),
               onTap: () {
                 Navigator.pop(c);
                 _shareLink(obj);
@@ -498,6 +519,8 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final viewMode = ref.watch(viewModeProvider);
+    final isGrid = viewMode == ViewMode.grid;
     // Auto-refresh listing when an upload for this bucket/prefix completes.
     ref.listen<List<TransferTask>>(transferManagerProvider, (prev, next) {
       if (!mounted) return;
@@ -524,6 +547,13 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
           style: const TextStyle(fontWeight: FontWeight.w800),
         ),
         actions: [
+          IconButton(
+            icon: Icon(
+              isGrid ? Icons.view_list_rounded : Icons.grid_view_rounded,
+            ),
+            tooltip: isGrid ? 'List view' : 'Grid view',
+            onPressed: () => ref.read(viewModeProvider.notifier).toggle(),
+          ),
           IconButton(
             icon: const Icon(Icons.create_new_folder_outlined),
             tooltip: 'New folder',
@@ -658,43 +688,90 @@ class _BrowserState extends ConsumerState<BrowserScreen> {
               }
               return RefreshIndicator(
                 onRefresh: () async => _refresh(),
-                child: ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
-                  children: [
-                    for (final p in prefixes) ...[
-                      _FolderCard(
-                        prefix: p,
-                        prefixBase: _prefix,
-                        onTap: () => _enterPrefix(p),
+                child: isGrid
+                    ? GridView.builder(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+                        gridDelegate:
+                            const SliverGridDelegateWithFixedCrossAxisCount(
+                              crossAxisCount: 2,
+                              mainAxisSpacing: 12,
+                              crossAxisSpacing: 12,
+                              childAspectRatio: 0.86,
+                            ),
+                        itemCount:
+                            prefixes.length +
+                            objects.length +
+                            (result.isTruncated ? 1 : 0),
+                        itemBuilder: (c, i) {
+                          if (i < prefixes.length) {
+                            final p = prefixes[i];
+                            return _FolderGridTile(
+                              prefix: p,
+                              prefixBase: _prefix,
+                              onTap: () => _enterPrefix(p),
+                            );
+                          }
+                          final oi = i - prefixes.length;
+                          if (oi < objects.length) {
+                            final obj = objects[oi];
+                            return _ObjectGridTile(
+                              obj: obj,
+                              scheme: scheme,
+                              onTap: () => _openObject(obj),
+                              onLongPress: () => _showObjectSheet(obj),
+                            );
+                          }
+                          return Center(
+                            child: _loadingMore
+                                ? const CircularProgressIndicator()
+                                : OutlinedButton.icon(
+                                    onPressed: () => _loadMore(result),
+                                    icon: const Icon(Icons.expand_more_rounded),
+                                    label: const Text('More'),
+                                  ),
+                          );
+                        },
+                      )
+                    : ListView(
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+                        children: [
+                          for (final p in prefixes) ...[
+                            _FolderCard(
+                              prefix: p,
+                              prefixBase: _prefix,
+                              onTap: () => _enterPrefix(p),
+                            ),
+                            const SizedBox(height: 10),
+                          ],
+                          for (final obj in objects) ...[
+                            _ObjectCard(
+                              obj: obj,
+                              scheme: scheme,
+                              onTap: () => _openObject(obj),
+                              onLongPress: () => _showObjectSheet(obj),
+                            ),
+                            const SizedBox(height: 10),
+                          ],
+                          if (result.isTruncated) ...[
+                            const SizedBox(height: 4),
+                            Center(
+                              child: _loadingMore
+                                  ? const Padding(
+                                      padding: EdgeInsets.all(12),
+                                      child: CircularProgressIndicator(),
+                                    )
+                                  : OutlinedButton.icon(
+                                      onPressed: () => _loadMore(result),
+                                      icon: const Icon(
+                                        Icons.expand_more_rounded,
+                                      ),
+                                      label: const Text('Load more'),
+                                    ),
+                            ),
+                            const SizedBox(height: 8),
+                          ],
+                        ],
                       ),
-                      const SizedBox(height: 10),
-                    ],
-                    for (final obj in objects) ...[
-                      _ObjectCard(
-                        obj: obj,
-                        scheme: scheme,
-                        onTap: () => _openObject(obj),
-                      ),
-                      const SizedBox(height: 10),
-                    ],
-                    if (result.isTruncated) ...[
-                      const SizedBox(height: 4),
-                      Center(
-                        child: _loadingMore
-                            ? const Padding(
-                                padding: EdgeInsets.all(12),
-                                child: CircularProgressIndicator(),
-                              )
-                            : OutlinedButton.icon(
-                                onPressed: () => _loadMore(result),
-                                icon: const Icon(Icons.expand_more_rounded),
-                                label: const Text('Load more'),
-                              ),
-                      ),
-                      const SizedBox(height: 8),
-                    ],
-                  ],
-                ),
               );
             },
           ),
@@ -771,10 +848,12 @@ class _ObjectCard extends StatelessWidget {
   final S3Object obj;
   final ColorScheme scheme;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
   const _ObjectCard({
     required this.obj,
     required this.scheme,
     required this.onTap,
+    this.onLongPress,
   });
 
   Color get _tint {
@@ -782,6 +861,7 @@ class _ObjectCard extends StatelessWidget {
     return switch (kind) {
       ViewerKind.image => const Color(0xFF34D399),
       ViewerKind.video => const Color(0xFFF472B6),
+      ViewerKind.audio => const Color(0xFFA78BFA),
       ViewerKind.pdf => const Color(0xFFF87171),
       ViewerKind.text => const Color(0xFF60A5FA),
       null => scheme.primary,
@@ -793,6 +873,7 @@ class _ObjectCard extends StatelessWidget {
     return switch (kind) {
       ViewerKind.image => Icons.image_rounded,
       ViewerKind.video => Icons.movie_rounded,
+      ViewerKind.audio => Icons.music_note_rounded,
       ViewerKind.pdf => Icons.picture_as_pdf_rounded,
       ViewerKind.text => Icons.description_rounded,
       null => Icons.insert_drive_file_rounded,
@@ -805,6 +886,7 @@ class _ObjectCard extends StatelessWidget {
       padding: const EdgeInsets.all(12),
       radius: 16,
       onTap: onTap,
+      onLongPress: onLongPress,
       child: Row(
         children: [
           Container(
@@ -845,6 +927,144 @@ class _ObjectCard extends StatelessWidget {
               size: 18,
               color: scheme.onSurface.withValues(alpha: 0.4),
             ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Grid tile for folders (default view).
+class _FolderGridTile extends StatelessWidget {
+  final String prefix;
+  final String prefixBase;
+  final VoidCallback onTap;
+  const _FolderGridTile({
+    required this.prefix,
+    required this.prefixBase,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final name = prefix.startsWith(prefixBase)
+        ? prefix.substring(prefixBase.length).replaceAll('/', '')
+        : prefix.replaceAll('/', '');
+    return Glass(
+      padding: const EdgeInsets.all(14),
+      radius: 18,
+      onTap: onTap,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            height: 48,
+            width: 48,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(15),
+              gradient: const LinearGradient(
+                colors: [Color(0xFF38BDF8), AppColors.indigo],
+              ),
+            ),
+            child: const Icon(
+              Icons.folder_rounded,
+              color: Colors.white,
+              size: 26,
+            ),
+          ),
+          const Spacer(),
+          Text(
+            name.isEmpty ? prefix : name,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'Folder',
+            style: TextStyle(
+              fontSize: 12,
+              color: Theme.of(context).colorScheme.onSurface
+                  .withValues(alpha: 0.55),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Grid tile for files (default view). Long-press opens the action sheet.
+class _ObjectGridTile extends StatelessWidget {
+  final S3Object obj;
+  final ColorScheme scheme;
+  final VoidCallback onTap;
+  final VoidCallback? onLongPress;
+  const _ObjectGridTile({
+    required this.obj,
+    required this.scheme,
+    required this.onTap,
+    this.onLongPress,
+  });
+
+  Color get _tint {
+    final kind = viewerKindForKey(obj.key);
+    return switch (kind) {
+      ViewerKind.image => const Color(0xFF34D399),
+      ViewerKind.video => const Color(0xFFF472B6),
+      ViewerKind.audio => const Color(0xFFA78BFA),
+      ViewerKind.pdf => const Color(0xFFF87171),
+      ViewerKind.text => const Color(0xFF60A5FA),
+      null => scheme.primary,
+    };
+  }
+
+  IconData get _icon {
+    final kind = viewerKindForKey(obj.key);
+    return switch (kind) {
+      ViewerKind.image => Icons.image_rounded,
+      ViewerKind.video => Icons.movie_rounded,
+      ViewerKind.audio => Icons.music_note_rounded,
+      ViewerKind.pdf => Icons.picture_as_pdf_rounded,
+      ViewerKind.text => Icons.description_rounded,
+      null => Icons.insert_drive_file_rounded,
+    };
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Glass(
+      padding: const EdgeInsets.all(14),
+      radius: 18,
+      onTap: onTap,
+      onLongPress: onLongPress,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            height: 48,
+            width: 48,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(15),
+              color: _tint.withValues(alpha: 0.18),
+              border: Border.all(color: _tint.withValues(alpha: 0.35)),
+            ),
+            child: Icon(_icon, color: _tint, size: 26),
+          ),
+          const Spacer(),
+          Text(
+            obj.name,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            _BrowserState.formatBytes(obj.size),
+            style: TextStyle(
+              fontSize: 12,
+              color: scheme.onSurface.withValues(alpha: 0.55),
+            ),
+          ),
         ],
       ),
     );

@@ -105,6 +105,31 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
     _update(id, (t) => t.copyWith(status: TransferStatus.canceled));
   }
 
+  /// Remove a single task. Optionally delete its local file.
+  Future<void> remove(String id, {bool deleteLocalFile = false}) async {
+    TransferTask? task;
+    try {
+      task = state.firstWhere((t) => t.id == id);
+    } catch (_) {
+      return;
+    }
+    if (task.status == TransferStatus.running ||
+        task.status == TransferStatus.queued) {
+      cancel(id);
+    }
+    if (deleteLocalFile) {
+      try {
+        final file = File(task.localPath);
+        if (await file.exists()) await file.delete();
+        final part = File('${task.localPath}.part');
+        if (await part.exists()) await part.delete();
+      } catch (_) {}
+    }
+    _cancelFlags.remove(id);
+    _clients.remove(id);
+    state = state.where((t) => t.id != id).toList();
+  }
+
   /// Clear done + canceled, keep queued/running/failed for retry.
   void clearFinished() {
     state = state

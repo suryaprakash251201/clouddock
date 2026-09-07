@@ -33,6 +33,25 @@ void main() {
       }
     });
 
+    test('audio', () {
+      for (final ext in [
+        'mp3',
+        'm4a',
+        'aac',
+        'wav',
+        'ogg',
+        'oga',
+        'opus',
+        'flac',
+        'aiff',
+        'amr',
+        'wma',
+      ]) {
+        expect(viewerKindForKey('music/a.$ext'), ViewerKind.audio, reason: ext);
+      }
+      expect(viewerKindForKey('music/A.MP3'), ViewerKind.audio);
+    });
+
     test('unsupported or missing extension → null', () {
       expect(viewerKindForKey('archive.zip'), isNull);
       expect(viewerKindForKey('README'), isNull);

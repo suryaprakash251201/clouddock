@@ -120,6 +120,7 @@ class Glass extends StatelessWidget {
   final EdgeInsetsGeometry? padding;
   final double radius;
   final VoidCallback? onTap;
+  final VoidCallback? onLongPress;
   final double? blur;
   const Glass({
     super.key,
@@ -127,6 +128,7 @@ class Glass extends StatelessWidget {
     this.padding,
     this.radius = 20,
     this.onTap,
+    this.onLongPress,
     this.blur,
   });
 
@@ -173,10 +175,15 @@ class Glass extends StatelessWidget {
         ),
       ),
     );
-    if (onTap == null) return surface;
+    if (onTap == null && onLongPress == null) return surface;
     return Material(
       color: Colors.transparent,
-      child: InkWell(borderRadius: borderRadius, onTap: onTap, child: surface),
+      child: InkWell(
+        borderRadius: borderRadius,
+        onTap: onTap,
+        onLongPress: onLongPress,
+        child: surface,
+      ),
     );
   }
 }

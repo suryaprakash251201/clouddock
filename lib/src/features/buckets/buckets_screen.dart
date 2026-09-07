@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../core/prefs/app_prefs.dart';
 import '../../core/s3/s3_account.dart';
 import '../../core/s3/s3_client.dart';
 import '../../core/s3/s3_models.dart';
@@ -120,9 +121,11 @@ class _BucketsState extends ConsumerState<BucketsScreen> {
   @override
   Widget build(BuildContext context) {
     final account = ref.watch(accountByIdProvider(widget.accountId));
+    final viewMode = ref.watch(viewModeProvider);
     if (account == null) {
       return const Scaffold(body: Center(child: Text('Account not found')));
     }
+    final isGrid = viewMode == ViewMode.grid;
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
@@ -131,6 +134,13 @@ class _BucketsState extends ConsumerState<BucketsScreen> {
           style: const TextStyle(fontWeight: FontWeight.w800),
         ),
         actions: [
+          IconButton(
+            icon: Icon(
+              isGrid ? Icons.view_list_rounded : Icons.grid_view_rounded,
+            ),
+            tooltip: isGrid ? 'List view' : 'Grid view',
+            onPressed: () => ref.read(viewModeProvider.notifier).toggle(),
+          ),
           IconButton(
             icon: const Icon(Icons.refresh_rounded),
             tooltip: 'Refresh',
@@ -177,53 +187,76 @@ class _BucketsState extends ConsumerState<BucketsScreen> {
                 children: [
                   _AccountStrip(account: account),
                   const SectionLabel('Buckets'),
-                  for (final b in buckets) ...[
-                    Glass(
-                      padding: const EdgeInsets.all(14),
-                      onTap: () =>
-                          context.push('/browse/${widget.accountId}/${b.name}'),
-                      child: Row(
-                        children: [
-                          ProviderBadge(provider: account.provider, size: 44),
-                          const SizedBox(width: 14),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  b.name,
-                                  style: const TextStyle(
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 15.5,
-                                  ),
-                                ),
-                                if (b.creationDate != null)
+                  if (isGrid)
+                    GridView.builder(
+                      shrinkWrap: true,
+                      physics: const NeverScrollableScrollPhysics(),
+                      gridDelegate:
+                          const SliverGridDelegateWithFixedCrossAxisCount(
+                            crossAxisCount: 2,
+                            mainAxisSpacing: 12,
+                            crossAxisSpacing: 12,
+                            childAspectRatio: 0.92,
+                          ),
+                      itemCount: buckets.length,
+                      itemBuilder: (c, i) => _BucketGridTile(
+                        bucket: buckets[i],
+                        account: account,
+                        onTap: () => context.push(
+                          '/s3/browse/${widget.accountId}/${buckets[i].name}',
+                        ),
+                        onDelete: () => _deleteBucket(buckets[i].name),
+                      ),
+                    )
+                  else
+                    for (final b in buckets) ...[
+                      Glass(
+                        padding: const EdgeInsets.all(14),
+                        onTap: () => context.push(
+                          '/s3/browse/${widget.accountId}/${b.name}',
+                        ),
+                        child: Row(
+                          children: [
+                            ProviderBadge(provider: account.provider, size: 44),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
                                   Text(
-                                    'Created ${b.creationDate!.toLocal()}'
-                                        .split('.')
-                                        .first,
-                                    style: TextStyle(
-                                      fontSize: 12,
-                                      color: Theme.of(context)
-                                          .colorScheme
-                                          .onSurface
-                                          .withValues(alpha: 0.55),
+                                    b.name,
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.w700,
+                                      fontSize: 15.5,
                                     ),
                                   ),
-                              ],
+                                  if (b.creationDate != null)
+                                    Text(
+                                      'Created ${b.creationDate!.toLocal()}'
+                                          .split('.')
+                                          .first,
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: Theme.of(context)
+                                            .colorScheme
+                                            .onSurface
+                                            .withValues(alpha: 0.55),
+                                      ),
+                                    ),
+                                ],
+                              ),
                             ),
-                          ),
-                          IconButton(
-                            icon: const Icon(Icons.delete_outline_rounded),
-                            tooltip: 'Delete bucket',
-                            onPressed: () => _deleteBucket(b.name),
-                          ),
-                          const Icon(Icons.chevron_right_rounded),
-                        ],
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline_rounded),
+                              tooltip: 'Delete bucket',
+                              onPressed: () => _deleteBucket(b.name),
+                            ),
+                            const Icon(Icons.chevron_right_rounded),
+                          ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                  ],
+                      const SizedBox(height: 12),
+                    ],
                 ],
               );
             },
@@ -262,6 +295,68 @@ class _AccountStrip extends StatelessWidget {
                 fontSize: 12.5,
                 color: scheme.onSurface.withValues(alpha: 0.7),
               ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Grid tile for buckets (default view).
+class _BucketGridTile extends StatelessWidget {
+  final S3Bucket bucket;
+  final S3Account account;
+  final VoidCallback onTap;
+  final VoidCallback onDelete;
+  const _BucketGridTile({
+    required this.bucket,
+    required this.account,
+    required this.onTap,
+    required this.onDelete,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Glass(
+      padding: const EdgeInsets.all(14),
+      radius: 18,
+      onTap: onTap,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              ProviderBadge(provider: account.provider, size: 44),
+              const Spacer(),
+              InkWell(
+                onTap: onDelete,
+                borderRadius: BorderRadius.circular(99),
+                child: const Padding(
+                  padding: EdgeInsets.all(4),
+                  child: Icon(Icons.delete_outline_rounded, size: 20),
+                ),
+              ),
+            ],
+          ),
+          const Spacer(),
+          Text(
+            bucket.name,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            bucket.creationDate == null
+                ? account.provider.label
+                : 'Created ${bucket.creationDate!.toLocal()}'.split('.').first,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(
+              fontSize: 11.5,
+              color: scheme.onSurface.withValues(alpha: 0.55),
             ),
           ),
         ],
