@@ -80,3 +80,99 @@ class CompletedPart {
   final String etag;
   const CompletedPart(this.partNumber, this.etag);
 }
+
+/// Full object metadata from HEAD (size, type, etag, custom metadata…).
+class S3ObjectDetails {
+  final String key;
+  final int size;
+  final String? etag;
+  final String? contentType;
+  final DateTime? lastModified;
+  final String? storageClass;
+  final String? versionId;
+  final String? cacheControl;
+  final String? contentDisposition;
+  final String? contentEncoding;
+
+  /// User metadata (x-amz-meta-*), keys keep the prefix stripped.
+  final Map<String, String> metadata;
+
+  const S3ObjectDetails({
+    required this.key,
+    required this.size,
+    this.etag,
+    this.contentType,
+    this.lastModified,
+    this.storageClass,
+    this.versionId,
+    this.cacheControl,
+    this.contentDisposition,
+    this.contentEncoding,
+    this.metadata = const {},
+  });
+
+  bool get hasMetadata => metadata.isNotEmpty;
+}
+
+/// One entry from ListObjectVersions (a version or a delete marker).
+class S3ObjectVersion {
+  final String key;
+  final String versionId;
+  final bool isLatest;
+  final bool isDeleteMarker;
+  final int size;
+  final DateTime? lastModified;
+  final String? etag;
+  final String? storageClass;
+  final String? owner;
+
+  const S3ObjectVersion({
+    required this.key,
+    required this.versionId,
+    this.isLatest = false,
+    this.isDeleteMarker = false,
+    this.size = 0,
+    this.lastModified,
+    this.etag,
+    this.storageClass,
+    this.owner,
+  });
+
+  /// Delete markers have no data to read/restore.
+  bool get isRestorable => !isDeleteMarker;
+
+  String get shortVersionId =>
+      versionId.length <= 10 ? versionId : versionId.substring(0, 10);
+}
+
+/// Result of ListObjectVersions, optionally paginated.
+class ListObjectVersionsResult {
+  final List<S3ObjectVersion> versions;
+  final bool isTruncated;
+  final String? nextKeyMarker;
+  final String? nextVersionIdMarker;
+
+  const ListObjectVersionsResult({
+    required this.versions,
+    this.isTruncated = false,
+    this.nextKeyMarker,
+    this.nextVersionIdMarker,
+  });
+}
+
+/// Object tag (key/value pair).
+class S3ObjectTag {
+  final String key;
+  final String value;
+  const S3ObjectTag(this.key, this.value);
+
+  @override
+  bool operator ==(Object other) =>
+      other is S3ObjectTag && other.key == key && other.value == value;
+
+  @override
+  int get hashCode => Object.hash(key, value);
+}
+
+/// Bucket versioning state (`getBucketVersioning`).
+enum BucketVersioning { unversioned, enabled, suspended, unknown }

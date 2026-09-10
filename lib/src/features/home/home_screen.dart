@@ -7,9 +7,13 @@ import 'package:local_auth/local_auth.dart';
 
 import '../../core/prefs/app_prefs.dart';
 import '../../core/storage/account_store.dart';
+import '../../core/utils/format.dart';
+import '../../ui/file_visuals.dart';
+import '../../ui/floating_nav_bar.dart';
 import '../../ui/glass.dart';
+import '../favorites/favorites_store.dart';
 import '../transfers/transfer_manager.dart';
-import '../viewers/viewer_kind.dart';
+import '../viewers/viewer_routes.dart';
 import 'recent_files_store.dart';
 
 class HomeScreen extends ConsumerStatefulWidget {
@@ -23,6 +27,7 @@ class _HomeState extends ConsumerState<HomeScreen> {
   bool _unlocked = false;
   bool _checkingLock = true;
   bool _authenticatedThisSession = false;
+  bool _showAllFavorites = false;
 
   @override
   void initState() {
@@ -93,16 +98,33 @@ class _HomeState extends ConsumerState<HomeScreen> {
     return 'Good evening';
   }
 
-  static String _formatBytes(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    const units = ['KB', 'MB', 'GB', 'TB'];
-    var v = bytes.toDouble();
-    var u = -1;
-    do {
-      v /= 1024;
-      u++;
-    } while (v >= 1024 && u < units.length - 1);
-    return '${v.toStringAsFixed(1)} ${units[u]}';
+  void _openFavorite(BuildContext context, FavoriteFile f) {
+    final account = ref.read(accountByIdProvider(f.accountId));
+    if (account == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Account for "${f.name}" no longer exists')),
+      );
+      ref.read(favoritesProvider.notifier).remove(f.id);
+      return;
+    }
+    final route = viewerRouteForKey(f.key);
+    if (route == null) {
+      final prefix = f.key.contains('/')
+          ? f.key.substring(0, f.key.lastIndexOf('/') + 1)
+          : '';
+      context.push(
+        '/s3/browse/${f.accountId}/${f.bucket}?prefix=${Uri.encodeComponent(prefix)}',
+      );
+      return;
+    }
+    context.push(
+      viewerLocation(
+        route: route,
+        accountId: f.accountId,
+        bucket: f.bucket,
+        key: f.key,
+      ),
+    );
   }
 
   void _openRecent(BuildContext context, RecentFile r) {
@@ -114,15 +136,7 @@ class _HomeState extends ConsumerState<HomeScreen> {
       ref.read(recentFilesProvider.notifier).remove(r.id);
       return;
     }
-    final kind = viewerKindForKey(r.key);
-    final route = switch (kind) {
-      ViewerKind.image => '/view/image',
-      ViewerKind.text => '/view/text',
-      ViewerKind.pdf => '/view/pdf',
-      ViewerKind.video => '/view/video',
-      ViewerKind.audio => '/view/audio',
-      null => null,
-    };
+    final route = viewerRouteForKey(r.key);
     if (route == null) {
       // No in-app viewer: jump to the containing folder.
       final prefix = r.key.contains('/')
@@ -134,14 +148,12 @@ class _HomeState extends ConsumerState<HomeScreen> {
       return;
     }
     context.push(
-      Uri(
-        path: route,
-        queryParameters: {
-          'accountId': r.accountId,
-          'bucket': r.bucket,
-          'key': r.key,
-        },
-      ).toString(),
+      viewerLocation(
+        route: route,
+        accountId: r.accountId,
+        bucket: r.bucket,
+        key: r.key,
+      ),
     );
   }
 
@@ -213,12 +225,19 @@ class _HomeState extends ConsumerState<HomeScreen> {
         )
         .length;
     final recents = ref.watch(recentFilesProvider);
-    // Prune recents whose account was deleted (post-frame to avoid build loops).
-    if (recents.isNotEmpty && accountsAsync.hasValue) {
+    final favorites = ref.watch(favoritesProvider);
+    // Prune recents/favorites whose account was deleted (post-frame to avoid
+    // build loops).
+    if (accountsAsync.hasValue) {
       final live = accounts.map((a) => a.id).toSet();
       if (recents.any((r) => !live.contains(r.accountId))) {
         WidgetsBinding.instance.addPostFrameCallback(
           (_) => ref.read(recentFilesProvider.notifier).prune(live),
+        );
+      }
+      if (favorites.any((f) => !live.contains(f.accountId))) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => ref.read(favoritesProvider.notifier).prune(live),
         );
       }
     }
@@ -238,7 +257,12 @@ class _HomeState extends ConsumerState<HomeScreen> {
               await ref.read(accountStoreProvider.notifier).refresh();
             },
             child: ListView(
-              padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+              padding: const EdgeInsets.fromLTRB(
+                16,
+                8,
+                16,
+                kFloatingNavBarClearance,
+              ),
               children: [
                 Glass(
                   padding: const EdgeInsets.all(18),
@@ -338,6 +362,49 @@ class _HomeState extends ConsumerState<HomeScreen> {
                     ),
                   ],
                 ),
+                Row(
+                  children: [
+                    const Expanded(child: SectionLabel('Starred')),
+                    if (favorites.length > 5)
+                      TextButton(
+                        onPressed: () => setState(
+                          () => _showAllFavorites = !_showAllFavorites,
+                        ),
+                        child: Text(
+                          _showAllFavorites
+                              ? 'Show less'
+                              : 'Show all (${favorites.length})',
+                        ),
+                      ),
+                  ],
+                ),
+                if (favorites.isEmpty)
+                  const Glass(
+                    padding: EdgeInsets.all(18),
+                    child: Row(
+                      children: [
+                        Icon(Icons.star_outline_rounded),
+                        SizedBox(width: 12),
+                        Expanded(
+                          child: Text(
+                            'Star files from an object\'s details to pin them here.',
+                            style: TextStyle(fontSize: 13),
+                          ),
+                        ),
+                      ],
+                    ),
+                  )
+                else
+                  for (final f
+                      in _showAllFavorites ? favorites : favorites.take(5)) ...[
+                    _FavoriteCard(
+                      favorite: f,
+                      onTap: () => _openFavorite(context, f),
+                      onDismiss: () =>
+                          ref.read(favoritesProvider.notifier).remove(f.id),
+                    ),
+                    const SizedBox(height: 10),
+                  ],
                 Row(
                   children: [
                     const Expanded(child: SectionLabel('Recently opened')),
@@ -446,29 +513,9 @@ class _RecentCard extends StatelessWidget {
     required this.onDismiss,
   });
 
-  Color _tint() {
-    final kind = viewerKindForKey(recent.key);
-    return switch (kind) {
-      ViewerKind.image => const Color(0xFF34D399),
-      ViewerKind.video => const Color(0xFFF472B6),
-      ViewerKind.audio => const Color(0xFFA78BFA),
-      ViewerKind.pdf => const Color(0xFFF87171),
-      ViewerKind.text => const Color(0xFF60A5FA),
-      null => const Color(0xFF2DD4BF),
-    };
-  }
+  Color _tint() => fileTint(recent.key, const Color(0xFF2DD4BF));
 
-  IconData _icon() {
-    final kind = viewerKindForKey(recent.key);
-    return switch (kind) {
-      ViewerKind.image => Icons.image_rounded,
-      ViewerKind.video => Icons.movie_rounded,
-      ViewerKind.audio => Icons.music_note_rounded,
-      ViewerKind.pdf => Icons.picture_as_pdf_rounded,
-      ViewerKind.text => Icons.description_rounded,
-      null => Icons.insert_drive_file_rounded,
-    };
-  }
+  IconData _icon() => fileIcon(recent.key);
 
   @override
   Widget build(BuildContext context) {
@@ -516,7 +563,7 @@ class _RecentCard extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
-                    '${recent.accountName} • ${recent.bucket} • ${_HomeState._formatBytes(recent.size)}',
+                    '${recent.accountName} • ${recent.bucket} • ${formatBytes(recent.size)}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: TextStyle(
@@ -528,6 +575,81 @@ class _RecentCard extends StatelessWidget {
               ),
             ),
             const Icon(Icons.chevron_right_rounded),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FavoriteCard extends StatelessWidget {
+  final FavoriteFile favorite;
+  final VoidCallback onTap;
+  final VoidCallback onDismiss;
+  const _FavoriteCard({
+    required this.favorite,
+    required this.onTap,
+    required this.onDismiss,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final tint = fileTint(favorite.key, const Color(0xFFFBBF24));
+    return Dismissible(
+      key: ValueKey('fav-${favorite.id}'),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 20),
+        decoration: BoxDecoration(
+          color: scheme.error.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(16),
+        ),
+        child: const Icon(Icons.star_outline_rounded),
+      ),
+      onDismissed: (_) => onDismiss(),
+      child: Glass(
+        padding: const EdgeInsets.all(12),
+        radius: 16,
+        onTap: onTap,
+        child: Row(
+          children: [
+            Container(
+              height: 42,
+              width: 42,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(13),
+                color: tint.withValues(alpha: 0.18),
+                border: Border.all(color: tint.withValues(alpha: 0.35)),
+              ),
+              child: Icon(fileIcon(favorite.key), color: tint, size: 22),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    favorite.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${favorite.accountName} • ${favorite.bucket} • ${formatBytes(favorite.size)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: scheme.onSurface.withValues(alpha: 0.55),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.star_rounded, color: Color(0xFFFBBF24), size: 20),
           ],
         ),
       ),

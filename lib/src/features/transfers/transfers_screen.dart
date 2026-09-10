@@ -8,24 +8,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../core/utils/format.dart';
+import '../../ui/floating_nav_bar.dart';
 import '../../ui/glass.dart';
 import 'transfer_manager.dart';
 
 class TransfersScreen extends ConsumerWidget {
   const TransfersScreen({super.key});
 
-  static String _formatBytes(int? bytes) {
-    if (bytes == null) return '';
-    if (bytes < 1024) return '$bytes B';
-    const units = ['KB', 'MB', 'GB', 'TB'];
-    var v = bytes.toDouble();
-    var u = -1;
-    do {
-      v /= 1024;
-      u++;
-    } while (v >= 1024 && u < units.length - 1);
-    return '${v.toStringAsFixed(1)} ${units[u]}';
-  }
+  static String _formatBytes(int? bytes) => formatBytes(bytes);
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -86,7 +77,12 @@ class TransfersScreen extends ConsumerWidget {
                   subtitle: 'Uploads and downloads will appear here with live progress. Files you download stay on-device.',
                 )
               : ListView(
-                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+                  padding: const EdgeInsets.fromLTRB(
+                    16,
+                    8,
+                    16,
+                    kFloatingNavBarClearance,
+                  ),
                   children: [
                     if (active.isNotEmpty) ...[
                       SectionLabel('Active (${active.length})'),

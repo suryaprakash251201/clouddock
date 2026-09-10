@@ -34,9 +34,25 @@ Grab the latest signed builds from
   - Text editor (edit + save back to S3, 2 MB edit cap) — txt/md/json/xml/csv/log/yaml/code
   - PDF viewer (PDFium, text selection) — pdf
   - Video player (presigned-URL streaming + fullscreen) — mp4/mov/webm/mkv
+  - Audio player (presigned-URL streaming) — mp3/m4a/aac/wav/flac/ogg/opus
+- **Object details**: full HEAD metadata (content type, ETag, storage class,
+  version id, cache headers), custom `x-amz-meta-*`, editable object tags,
+  key-path copy, and one-tap favorite/star.
+- **Version history**: list versions + delete markers, restore an old version,
+  download/share a specific version, and permanently delete versions.
+- **Upload links**: create a presigned PUT URL so anyone can upload into the
+  current folder until it expires (15 min / 1 h / 24 h).
+- **Uploads**: device files, photo library multi-select, and camera capture.
+- **Starred**: pin files from details/selection; Home shows them for quick
+  access (persisted on-device).
+- **Multi-select**: batch download, star, and delete selected objects.
 - **Transfers**: foreground queue with progress, cancel, clear-finished,
-  open-downloaded-file.
-- **Settings**: security note + provider tips.
+  open-downloaded-file, per-version downloads.
+- **Settings**: appearance, browsing defaults, storage tools, app lock,
+  diagnostics, and provider tips.
+- **Shell**: floating rounded glass bottom navigation with transfer-count
+  badges, auto-hiding when a screen takes over the bottom area
+  (multi-select mode).
 
 ## Project layout
 
@@ -44,19 +60,30 @@ Grab the latest signed builds from
 lib/
   main.dart
   src/
-    app.dart                    # MaterialApp + go_router
-    core/s3/
-      s3_account.dart           # S3Account model + ProviderType + presets
-      s3_models.dart            # Bucket/Object/ListObjectsResult
-      s3_exceptions.dart        # Typed errors with actionable messages
-      sigv4.dart                # SigV4 header + presign (all providers)
-      s3_client.dart            # ListBuckets/Objects, CRUD, multipart, presign
-    core/storage/account_store.dart  # SharedPrefs metadata + SecureStorage secrets
+    app.dart                    # MaterialApp + go_router (tabs + viewers)
+    core/
+      app_info.dart             # displayed app version
+      s3/
+        s3_account.dart         # S3Account model + ProviderType + presets
+        s3_models.dart          # Bucket/Object/Details/Version/Tag models
+        s3_exceptions.dart      # Typed errors with actionable messages
+        sigv4.dart              # SigV4 header + presign GET/PUT (all providers)
+        s3_client.dart          # ListObjects/Versions, CRUD, tags, presign, multipart
+      storage/account_store.dart  # SharedPrefs metadata + SecureStorage secrets
+      prefs/app_prefs.dart        # theme, view mode, link expiry, app lock
+      utils/format.dart           # byte formatting
     features/
-      accounts/  buckets/  browser/  transfers/  settings/
+      accounts/  buckets/  browser/   # browser + details + versions screens
+      favorites/                      # starred files store
+      home/  transfers/  settings/  viewers/
+    ui/                           # glass widgets, floating nav, theme, visuals
 test/
   sigv4_test.dart               # AWS vectors + presign consistency
   s3_client_test.dart           # URI building + XML parsing (mock http)
+  s3_features_test.dart         # details/tags/versions/presign tests
+  s3_stability_test.dart        # retries, error mapping, atomic IO
+  favorites_store_test.dart     # starred persistence + pruning
+  viewer_kind_test.dart         # extension → viewer mapping
   widget_test.dart              # App boot smoke test
 .github/workflows/
   ci.yml                        # analyze + format + test
@@ -88,8 +115,10 @@ flutter test
 flutter run            # device / simulator
 ```
 
-`flutter analyze` is clean (info lints only); `flutter test` → 20/20 pass
-(SigV4 verified against Python `hmac` ground truth).
+`flutter analyze` is clean (info lints only); `flutter test` → 71/71 pass
+(SigV4 verified against Python `hmac` ground truth; version/tag/presign
+parsing covered with a mock HTTP client; floating nav geometry covered by
+widget tests).
 
 ## Device builds
 
@@ -111,5 +140,8 @@ secret scanning, OSV, and Trivy filesystem scans; Dependabot tracks
 ## Roadmap (V2)
 
 - Background uploads/downloads (WorkManager / BGTasks), resume.
-- Pagination + load-more for 1000+ object buckets, versioning view.
-- ACL/tags/encryption editors, STS/SSO, biometric app lock, offline favorites.
+- ACL/encryption editors, STS/SSO, offline sync.
+- Lifecycle rules, bucket policies, cross-bucket copy/move.
+- **Done since v1.0:** object details + tags, version history
+  (list/restore/delete), presigned upload links, starred files,
+  multi-select batch actions, photo/camera uploads, pagination/load-more.

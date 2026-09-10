@@ -10,6 +10,8 @@ import 'core/prefs/app_prefs.dart';
 import 'features/accounts/account_form_screen.dart';
 import 'features/accounts/accounts_screen.dart';
 import 'features/browser/browser_screen.dart';
+import 'features/browser/object_details_screen.dart';
+import 'features/browser/versions_screen.dart';
 import 'features/buckets/buckets_screen.dart';
 import 'features/home/home_screen.dart';
 import 'features/settings/settings_screen.dart';
@@ -20,6 +22,7 @@ import 'features/viewers/image_viewer_screen.dart';
 import 'features/viewers/pdf_viewer_screen.dart';
 import 'features/viewers/text_editor_screen.dart';
 import 'features/viewers/video_player_screen.dart';
+import 'ui/floating_nav_bar.dart';
 import 'ui/theme.dart';
 
 Widget _viewerRoute(
@@ -101,6 +104,28 @@ final _router = GoRouter(
                     initialPrefix: state.uri.queryParameters['prefix'] ?? '',
                   ),
                 ),
+                GoRoute(
+                  path: 'object',
+                  builder: (context, state) {
+                    final q = state.uri.queryParameters;
+                    return ObjectDetailsScreen(
+                      accountId: q['accountId']!,
+                      bucket: q['bucket']!,
+                      objectKey: q['key']!,
+                    );
+                  },
+                ),
+                GoRoute(
+                  path: 'versions',
+                  builder: (context, state) {
+                    final q = state.uri.queryParameters;
+                    return VersionsScreen(
+                      accountId: q['accountId']!,
+                      bucket: q['bucket']!,
+                      objectKey: q['key']!,
+                    );
+                  },
+                ),
               ],
             ),
           ],
@@ -156,41 +181,49 @@ class AppShell extends ConsumerWidget {
               t.status == TransferStatus.queued,
         )
         .length;
+    final navVisible = ref.watch(shellNavVisibleProvider);
     return Scaffold(
+      extendBody: true,
       body: navigationShell,
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: navigationShell.currentIndex,
-        onDestinationSelected: _goBranch,
-        destinations: [
-          const NavigationDestination(
-            icon: Icon(Icons.home_outlined),
-            selectedIcon: Icon(Icons.home_rounded),
-            label: 'Home',
-          ),
-          const NavigationDestination(
-            icon: Icon(Icons.cloud_outlined),
-            selectedIcon: Icon(Icons.cloud_rounded),
-            label: 'S3',
-          ),
-          NavigationDestination(
-            icon: Badge(
-              isLabelVisible: activeCount > 0,
-              label: Text('$activeCount'),
-              child: const Icon(Icons.download_outlined),
-            ),
-            selectedIcon: Badge(
-              isLabelVisible: activeCount > 0,
-              label: Text('$activeCount'),
-              child: const Icon(Icons.download_rounded),
-            ),
-            label: 'Downloads',
-          ),
-          const NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            selectedIcon: Icon(Icons.settings_rounded),
-            label: 'Settings',
-          ),
-        ],
+      bottomNavigationBar: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 240),
+        switchInCurve: Curves.easeOutCubic,
+        switchOutCurve: Curves.easeInCubic,
+        transitionBuilder: (child, animation) => SizeTransition(
+          sizeFactor: animation,
+          alignment: Alignment.bottomCenter,
+          child: FadeTransition(opacity: animation, child: child),
+        ),
+        child: navVisible
+            ? FloatingNavBar(
+                key: const ValueKey('shell-nav'),
+                currentIndex: navigationShell.currentIndex,
+                onDestinationSelected: _goBranch,
+                destinations: [
+                  const FloatingNavDestination(
+                    icon: Icons.home_outlined,
+                    selectedIcon: Icons.home_rounded,
+                    label: 'Home',
+                  ),
+                  const FloatingNavDestination(
+                    icon: Icons.cloud_outlined,
+                    selectedIcon: Icons.cloud_rounded,
+                    label: 'S3',
+                  ),
+                  FloatingNavDestination(
+                    icon: Icons.download_outlined,
+                    selectedIcon: Icons.download_rounded,
+                    label: 'Downloads',
+                    badgeCount: activeCount,
+                  ),
+                  const FloatingNavDestination(
+                    icon: Icons.settings_outlined,
+                    selectedIcon: Icons.settings_rounded,
+                    label: 'Settings',
+                  ),
+                ],
+              )
+            : const SizedBox.shrink(key: ValueKey('shell-nav-hidden')),
       ),
     );
   }

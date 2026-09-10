@@ -207,8 +207,8 @@ class SigV4 {
     };
   }
 
-  /// Presigned URL (query auth, GET by default). Returns full URI with
-  /// X-Amz-* params + signature.
+  /// Presigned URL (query auth). [method] defaults to GET; pass PUT to build
+  /// an upload link. Returns full URI with X-Amz-* params + signature.
   static Uri presign({
     required String accessKey,
     required String secretKey,
@@ -217,6 +217,7 @@ class SigV4 {
     required String service,
     required Uri uri,
     required int expiresSeconds,
+    String method = 'GET',
     DateTime? now,
   }) {
     final t = (now ?? DateTime.now()).toUtc();
@@ -237,7 +238,7 @@ class SigV4 {
     final headers = {'host': uri.host + (uri.hasPort ? ':${uri.port}' : '')};
     const payloadHash = 'UNSIGNED-PAYLOAD';
     final canonicalRequest = buildCanonicalRequest(
-      method: 'GET',
+      method: method,
       path: uri.path,
       query: query,
       headers: headers,

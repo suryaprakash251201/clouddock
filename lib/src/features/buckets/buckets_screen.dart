@@ -9,6 +9,7 @@ import '../../core/s3/s3_account.dart';
 import '../../core/s3/s3_client.dart';
 import '../../core/s3/s3_models.dart';
 import '../../core/storage/account_store.dart';
+import '../../ui/floating_nav_bar.dart';
 import '../../ui/glass.dart';
 
 class BucketsScreen extends ConsumerStatefulWidget {
@@ -183,7 +184,12 @@ class _BucketsState extends ConsumerState<BucketsScreen> {
                 );
               }
               return ListView(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+                padding: const EdgeInsets.fromLTRB(
+                  16,
+                  8,
+                  16,
+                  kFloatingNavBarClearance,
+                ),
                 children: [
                   _AccountStrip(account: account),
                   const SectionLabel('Buckets'),

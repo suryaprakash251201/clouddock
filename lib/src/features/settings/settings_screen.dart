@@ -8,9 +8,12 @@ import 'package:local_auth/local_auth.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../core/app_info.dart';
 import '../../core/prefs/app_prefs.dart';
 import '../../core/storage/account_store.dart';
+import '../../ui/floating_nav_bar.dart';
 import '../../ui/glass.dart';
+import '../favorites/favorites_store.dart';
 import '../home/recent_files_store.dart';
 import '../transfers/transfer_manager.dart';
 
@@ -37,7 +40,12 @@ class SettingsScreen extends ConsumerWidget {
       body: AppBackground(
         child: SafeArea(
           child: ListView(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+            padding: const EdgeInsets.fromLTRB(
+              16,
+              8,
+              16,
+              kFloatingNavBarClearance,
+            ),
             children: [
               const SectionLabel('General'),
               Glass(
@@ -169,6 +177,21 @@ class SettingsScreen extends ConsumerWidget {
                       },
                     ),
                     ListTile(
+                      leading: const Icon(Icons.star_outline_rounded),
+                      title: const Text('Clear starred files'),
+                      subtitle: const Text('Removes Home → Starred.'),
+                      onTap: () async {
+                        await ref.read(favoritesProvider.notifier).clear();
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Starred files cleared'),
+                            ),
+                          );
+                        }
+                      },
+                    ),
+                    ListTile(
                       leading: const Icon(Icons.download_done_rounded),
                       title: const Text('Clear finished transfers'),
                       onTap: () {
@@ -215,7 +238,7 @@ class SettingsScreen extends ConsumerWidget {
                 padding: EdgeInsets.all(6),
                 child: ListTile(
                   leading: Icon(Icons.info_outline_rounded),
-                  title: Text('CloudDock v1.0'),
+                  title: Text(appVersionLabel),
                   subtitle: Text(
                     'S3 browser for AWS S3, Cloudflare R2, MinIO, Wasabi, Backblaze B2 + any S3-compatible server.',
                   ),
@@ -228,8 +251,11 @@ class SettingsScreen extends ConsumerWidget {
                   '• R2 uses region "auto" and path-style.\n'
                   '• MinIO dev servers can disable SSL.\n'
                   '• If listing fails, toggle path-style in account settings.\n'
-                  '• Long-press a file for download, share, rename, delete.\n'
-                  '• Tap any image, text, PDF, video, or audio file to open it in-app.',
+                  '• Long-press a file for details, versions, share, rename, delete.\n'
+                  '• Open a file\'s Details to view custom metadata and edit tags.\n'
+                  '• Version history can restore or permanently delete old versions.\n'
+                  '• Use Upload → Create upload link to receive files from anyone.\n'
+                  '• Long-press → Select (or the checkbox) for batch download/delete.',
                   style: TextStyle(fontSize: 13, height: 1.6),
                 ),
               ),

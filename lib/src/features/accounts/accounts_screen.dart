@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../core/s3/s3_account.dart';
 import '../../core/storage/account_store.dart';
+import '../../ui/floating_nav_bar.dart';
 import '../../ui/glass.dart';
 
 class AccountsScreen extends ConsumerWidget {
@@ -42,7 +43,12 @@ class AccountsScreen extends ConsumerWidget {
                 );
               }
               return ListView(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+                padding: const EdgeInsets.fromLTRB(
+                  16,
+                  8,
+                  16,
+                  kFloatingNavBarClearance,
+                ),
                 children: [
                   const SectionLabel('Storage accounts'),
                   for (final a in accounts) ...[

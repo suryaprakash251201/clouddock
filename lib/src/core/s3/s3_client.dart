@@ -348,39 +348,75 @@ class S3Client {
   /// HEAD object to fetch size / etag without downloading the body.
   /// Returns null when the object does not exist.
   Future<S3Object?> headObject(String bucket, String key) async {
+    final details = await headObjectDetails(bucket, key);
+    if (details == null) return null;
+    return S3Object(
+      key: details.key,
+      size: details.size,
+      lastModified: details.lastModified,
+      etag: details.etag,
+      storageClass: details.storageClass,
+    );
+  }
+
+  /// HEAD object with full metadata: content type, custom x-amz-meta-*,
+  /// storage class, version id, cache headers. Null when it doesn't exist.
+  Future<S3ObjectDetails?> headObjectDetails(
+    String bucket,
+    String key, {
+    String? versionId,
+  }) async {
+    final uri = buildUri(
+      bucket: bucket,
+      key: key,
+      query: versionId == null ? const {} : {'versionId': versionId},
+    );
     try {
-      final uri = buildUri(bucket: bucket, key: key);
-      final hash = SigV4.emptyHash;
-      Map<String, String> sign() => SigV4.signHeaders(
-        accessKey: account.accessKey,
-        secretKey: account.secretKey,
-        sessionToken: account.sessionToken,
-        region: account.region,
-        service: _service,
-        method: 'HEAD',
-        uri: uri,
-        payloadHash: hash,
-      );
-      final streamed = await _withRetry('HEAD $key', () async {
-        try {
-          final req = http.Request('HEAD', uri)..headers.addAll(sign());
-          return await _http.send(req);
-        } on http.ClientException catch (e) {
-          throw S3Exception.network(e.message);
-        }
-      });
-      await streamed.stream.drain();
-      if (streamed.statusCode == 404) return null;
-      if (streamed.statusCode >= 400) {
-        throw S3Exception.fromResponse(streamed.statusCode, 'HEAD $key');
-      }
-      final length =
-          int.tryParse(streamed.headers['content-length'] ?? '') ?? 0;
-      final etag = streamed.headers['etag']?.replaceAll('"', '');
-      return S3Object(key: key, size: length, etag: etag);
+      final resp = await _signed('HEAD', uri);
+      return _detailsFromHeaders(key, resp.headers, versionId: versionId);
     } on S3Exception catch (e) {
       if (e.statusCode == 404) return null;
       rethrow;
+    }
+  }
+
+  static S3ObjectDetails _detailsFromHeaders(
+    String key,
+    Map<String, String> headers, {
+    String? versionId,
+  }) {
+    final lower = <String, String>{
+      for (final e in headers.entries) e.key.toLowerCase(): e.value,
+    };
+    final metadata = <String, String>{};
+    for (final e in lower.entries) {
+      if (e.key.startsWith('x-amz-meta-')) {
+        metadata[e.key.substring('x-amz-meta-'.length)] = e.value;
+      }
+    }
+    return S3ObjectDetails(
+      key: key,
+      size: int.tryParse(lower['content-length'] ?? '') ?? 0,
+      etag: lower['etag']?.replaceAll('"', ''),
+      contentType: lower['content-type'],
+      lastModified: _parseHttpDate(lower['last-modified']),
+      storageClass: lower['x-amz-storage-class'],
+      versionId: lower['x-amz-version-id'] ?? versionId,
+      cacheControl: lower['cache-control'],
+      contentDisposition: lower['content-disposition'],
+      contentEncoding: lower['content-encoding'],
+      metadata: metadata,
+    );
+  }
+
+  /// S3 sends `Last-Modified` as an RFC 1123 HTTP date, which
+  /// [DateTime.tryParse] does not accept; [HttpDate] does.
+  static DateTime? _parseHttpDate(String? value) {
+    if (value == null || value.isEmpty) return null;
+    try {
+      return HttpDate.parse(value);
+    } catch (_) {
+      return DateTime.tryParse(value);
     }
   }
 
@@ -495,9 +531,159 @@ class S3Client {
     ).then((r) => r.stream.drain());
   }
 
+  /// List object versions (S3 ListObjectVersions). Pass a [prefix] to scope
+  /// the page; callers usually filter the exact key afterwards.
+  Future<ListObjectVersionsResult> listObjectVersions(
+    String bucket, {
+    String prefix = '',
+    String? keyMarker,
+    String? versionIdMarker,
+    int maxKeys = 1000,
+  }) async {
+    final query = <String, String>{
+      'versions': '',
+      'prefix': prefix,
+      'max-keys': '$maxKeys',
+      'key-marker': ?keyMarker,
+      'version-id-marker': ?versionIdMarker,
+    };
+    final resp = await _signed('GET', buildUri(bucket: bucket, query: query));
+    final doc = _parseXml(resp.body, 'ListObjectVersions');
+
+    String? textOf(XmlElement e, String tag) => e.getElement(tag)?.innerText;
+
+    List<S3ObjectVersion> parse(String tag, {required bool deleteMarker}) {
+      return doc
+          .findAllElements(tag)
+          .map((e) {
+            final key = textOf(e, 'Key') ?? '';
+            final owner = e
+                .getElement('Owner')
+                ?.getElement('DisplayName')
+                ?.innerText;
+            return S3ObjectVersion(
+              key: key,
+              versionId: textOf(e, 'VersionId') ?? '',
+              isLatest:
+                  (textOf(e, 'IsLatest') ?? 'false').toLowerCase() == 'true',
+              isDeleteMarker: deleteMarker,
+              size: int.tryParse(textOf(e, 'Size') ?? '0') ?? 0,
+              lastModified: DateTime.tryParse(textOf(e, 'LastModified') ?? ''),
+              etag: textOf(e, 'ETag')?.replaceAll('"', ''),
+              storageClass: textOf(e, 'StorageClass'),
+              owner: owner,
+            );
+          })
+          .where((v) => v.key.isNotEmpty)
+          .toList();
+    }
+
+    final versions = [
+      ...parse('Version', deleteMarker: false),
+      ...parse('DeleteMarker', deleteMarker: true),
+    ];
+    final truncated =
+        (doc.findAllElements('IsTruncated').firstOrNull?.innerText ?? 'false')
+            .toLowerCase() ==
+        'true';
+    return ListObjectVersionsResult(
+      versions: versions,
+      isTruncated: truncated,
+      nextKeyMarker: doc
+          .findAllElements('NextKeyMarker')
+          .firstOrNull
+          ?.innerText,
+      nextVersionIdMarker: doc
+          .findAllElements('NextVersionIdMarker')
+          .firstOrNull
+          ?.innerText,
+    );
+  }
+
+  /// Bucket versioning state (GetBucketVersioning).
+  Future<BucketVersioning> getBucketVersioning(String bucket) async {
+    final resp = await _signed(
+      'GET',
+      buildUri(bucket: bucket, query: {'versioning': ''}),
+    );
+    final doc = _parseXml(resp.body, 'GetBucketVersioning');
+    final status = doc.findAllElements('Status').firstOrNull?.innerText;
+    return switch (status) {
+      'Enabled' => BucketVersioning.enabled,
+      'Suspended' => BucketVersioning.suspended,
+      null => BucketVersioning.unversioned,
+      _ => BucketVersioning.unknown,
+    };
+  }
+
+  /// Object tags (GetObjectTagging); empty list when none are set.
+  Future<List<S3ObjectTag>> getObjectTags(
+    String bucket,
+    String key, {
+    String? versionId,
+  }) async {
+    final resp = await _signed(
+      'GET',
+      buildUri(
+        bucket: bucket,
+        key: key,
+        query: {'tagging': '', 'versionId': ?versionId},
+      ),
+    );
+    final doc = _parseXml(resp.body, 'GetObjectTagging');
+    return doc
+        .findAllElements('Tag')
+        .map(
+          (e) => S3ObjectTag(
+            e.getElement('Key')?.innerText ?? '',
+            e.getElement('Value')?.innerText ?? '',
+          ),
+        )
+        .where((t) => t.key.isNotEmpty)
+        .toList();
+  }
+
+  /// Replace the full tag set on an object (PutObjectTagging).
+  Future<void> putObjectTags(
+    String bucket,
+    String key,
+    List<S3ObjectTag> tags, {
+    String? versionId,
+  }) async {
+    final xmlBody =
+        '<Tagging><TagSet>'
+        '${tags.map((t) => '<Tag><Key>${_xmlEscape(t.key)}</Key><Value>${_xmlEscape(t.value)}</Value></Tag>').join()}'
+        '</TagSet></Tagging>';
+    final body = utf8.encode(xmlBody);
+    await _signed(
+      'PUT',
+      buildUri(
+        bucket: bucket,
+        key: key,
+        query: {'tagging': '', 'versionId': ?versionId},
+      ),
+      extraHeaders: {
+        'content-type': 'application/xml',
+        'content-md5': base64.encode(md5(body)),
+      },
+      body: body,
+    );
+  }
+
   /// Stream download; caller pipes [stream] to a file.
-  Future<http.StreamedResponse> getObject(String bucket, String key) {
-    return _signedStream('GET', buildUri(bucket: bucket, key: key));
+  Future<http.StreamedResponse> getObject(
+    String bucket,
+    String key, {
+    String? versionId,
+  }) {
+    return _signedStream(
+      'GET',
+      buildUri(
+        bucket: bucket,
+        key: key,
+        query: versionId == null ? const {} : {'versionId': versionId},
+      ),
+    );
   }
 
   /// Download to [savePath] atomically (`.part` + rename) with optional
@@ -507,8 +693,9 @@ class S3Client {
     String key,
     String savePath, {
     void Function(double progress)? onProgress,
+    String? versionId,
   }) async {
-    final stream = await getObject(bucket, key);
+    final stream = await getObject(bucket, key, versionId: versionId);
     final total = stream.contentLength ?? -1;
     final file = File(savePath);
     await file.parent.create(recursive: true);
@@ -544,8 +731,19 @@ class S3Client {
     return file;
   }
 
-  Future<void> deleteObject(String bucket, String key) async {
-    await _signed('DELETE', buildUri(bucket: bucket, key: key));
+  Future<void> deleteObject(
+    String bucket,
+    String key, {
+    String? versionId,
+  }) async {
+    await _signed(
+      'DELETE',
+      buildUri(
+        bucket: bucket,
+        key: key,
+        query: versionId == null ? const {} : {'versionId': versionId},
+      ),
+    );
   }
 
   Future<void> deleteObjects(String bucket, List<String> keys) async {
@@ -587,15 +785,41 @@ class S3Client {
   /// MD5 bytes (for the ?delete Content-MD5 header).
   static List<int> md5(List<int> bytes) => crypto.md5.convert(bytes).bytes;
 
-  Future<void> copyObject(String bucket, String fromKey, String toKey) async {
+  Future<void> copyObject(
+    String bucket,
+    String fromKey,
+    String toKey, {
+    String? sourceVersionId,
+    String? metadataDirective,
+  }) async {
     // CopySource must be URL-encoded but keep slashes.
-    final source = '/$bucket/${_encodeKey(fromKey)}';
+    var source = '/$bucket/${_encodeKey(fromKey)}';
+    if (sourceVersionId != null && sourceVersionId.isNotEmpty) {
+      source =
+          '$source?versionId=${SigV4.encodeRfc3986(sourceVersionId, encodeSlash: true)}';
+    }
     await _signed(
       'PUT',
       buildUri(bucket: bucket, key: toKey),
-      extraHeaders: {'x-amz-copy-source': source},
+      extraHeaders: {
+        'x-amz-copy-source': source,
+        'x-amz-metadata-directive': ?metadataDirective,
+      },
     );
   }
+
+  /// Restore an old version by copying it back over the current key.
+  Future<void> restoreObjectVersion(
+    String bucket,
+    String key,
+    String versionId,
+  ) => copyObject(
+    bucket,
+    key,
+    key,
+    sourceVersionId: versionId,
+    metadataDirective: 'COPY',
+  );
 
   Future<void> moveObject(String bucket, String fromKey, String toKey) async {
     await copyObject(bucket, fromKey, toKey);
@@ -696,6 +920,32 @@ class S3Client {
     String bucket,
     String key, {
     int expiresSeconds = 3600,
+    String? versionId,
+    DateTime? now,
+  }) {
+    final uri = buildUri(
+      bucket: bucket,
+      key: key,
+      query: versionId == null ? const {} : {'versionId': versionId},
+    );
+    return SigV4.presign(
+      accessKey: account.accessKey,
+      secretKey: account.secretKey,
+      sessionToken: account.sessionToken,
+      region: account.region,
+      service: _service,
+      uri: uri,
+      expiresSeconds: expiresSeconds.clamp(1, 604800),
+      now: now,
+    );
+  }
+
+  /// Presigned PUT URL — an upload link that lets anyone write to [key]
+  /// until it expires. Content type can't be enforced by the signature.
+  Uri presignedPut(
+    String bucket,
+    String key, {
+    int expiresSeconds = 3600,
     DateTime? now,
   }) {
     final uri = buildUri(bucket: bucket, key: key);
@@ -706,6 +956,7 @@ class S3Client {
       region: account.region,
       service: _service,
       uri: uri,
+      method: 'PUT',
       expiresSeconds: expiresSeconds.clamp(1, 604800),
       now: now,
     );

@@ -33,6 +33,9 @@ class TransferTask {
   final String? error;
   final int? totalBytes;
 
+  /// Specific S3 version to download (null = current version).
+  final String? versionId;
+
   const TransferTask({
     required this.id,
     required this.type,
@@ -44,6 +47,7 @@ class TransferTask {
     this.progress = 0,
     this.error,
     this.totalBytes,
+    this.versionId,
   });
 
   TransferTask copyWith({
@@ -52,6 +56,7 @@ class TransferTask {
     String? error,
     bool clearError = false,
     int? totalBytes,
+    String? versionId,
   }) => TransferTask(
     id: id,
     type: type,
@@ -63,6 +68,7 @@ class TransferTask {
     progress: progress ?? this.progress,
     error: clearError ? null : (error ?? this.error),
     totalBytes: totalBytes ?? this.totalBytes,
+    versionId: versionId ?? this.versionId,
   );
 }
 
@@ -191,12 +197,15 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
     }
   }
 
-  Future<void> _acquireSlot(String id) async {
+  /// Wait for a free slot. Returns false when the task was canceled while
+  /// queued (no slot is taken in that case).
+  Future<bool> _acquireSlot(String id) async {
     while (_running >= _maxConcurrent) {
-      _checkCancel(id);
+      if (_cancelFlags[id] == true) return false;
       await Future.delayed(const Duration(milliseconds: 100));
     }
     _running++;
+    return true;
   }
 
   void _releaseSlot() {
@@ -239,10 +248,14 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
     } catch (_) {
       return;
     }
-    await _acquireSlot(id);
-    final client = _clientFor(task.accountId);
-    _clients[id] = client;
+    if (!await _acquireSlot(id)) {
+      _update(id, (t) => t.copyWith(status: TransferStatus.canceled));
+      return;
+    }
+    S3Client? client;
     try {
+      client = _clientFor(task.accountId);
+      _clients[id] = client;
       _update(
         id,
         (t) => t.copyWith(status: TransferStatus.running, clearError: true),
@@ -282,7 +295,7 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
     } finally {
       _clients.remove(id);
       try {
-        client.close();
+        client?.close();
       } catch (_) {}
       _releaseSlot();
     }
@@ -359,9 +372,13 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
     required String accountId,
     required String bucket,
     required String key,
+    String? versionId,
   }) async {
     final dir = await getApplicationDocumentsDirectory();
-    final savePath = p.join(dir.path, 'CloudDock', bucket, key);
+    final basePath = p.join(dir.path, 'CloudDock', bucket, key);
+    final savePath = (versionId == null || versionId.isEmpty)
+        ? basePath
+        : _versionedPath(basePath, versionId);
     final task = TransferTask(
       id: _uuid.v4(),
       type: TransferType.download,
@@ -369,10 +386,24 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
       bucket: bucket,
       key: key,
       localPath: savePath,
+      versionId: versionId,
     );
     state = [...state, task];
     unawaited(_runDownload(task.id));
     return task.id;
+  }
+
+  /// Insert a short version marker before the extension so downloading an
+  /// old version never overwrites the current one on disk.
+  static String _versionedPath(String basePath, String versionId) {
+    final dir = p.dirname(basePath);
+    final name = p.basename(basePath);
+    final dot = name.lastIndexOf('.');
+    final short = versionId.length <= 8 ? versionId : versionId.substring(0, 8);
+    if (dot <= 0) return p.join(dir, '$name (v$short)');
+    final stem = name.substring(0, dot);
+    final ext = name.substring(dot);
+    return p.join(dir, '$stem (v$short)$ext');
   }
 
   Future<void> _runDownload(String id) async {
@@ -382,10 +413,14 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
     } catch (_) {
       return;
     }
-    await _acquireSlot(id);
-    final client = _clientFor(task.accountId);
-    _clients[id] = client;
+    if (!await _acquireSlot(id)) {
+      _update(id, (t) => t.copyWith(status: TransferStatus.canceled));
+      return;
+    }
+    S3Client? client;
     try {
+      client = _clientFor(task.accountId);
+      _clients[id] = client;
       _update(
         id,
         (t) => t.copyWith(status: TransferStatus.running, clearError: true),
@@ -395,6 +430,7 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
         task.bucket,
         task.key,
         task.localPath,
+        versionId: task.versionId,
         onProgress: (progress) {
           if (_cancelFlags[id] != true) {
             _update(id, (t) => t.copyWith(progress: progress));
@@ -426,7 +462,7 @@ class TransferManager extends StateNotifier<List<TransferTask>> {
     } finally {
       _clients.remove(id);
       try {
-        client.close();
+        client?.close();
       } catch (_) {}
       _releaseSlot();
     }
