@@ -31,7 +31,7 @@ dependencies:
   local_auth: ^3.0.2
 
   # Files + sharing
-  file_picker: ^12.2.0
+  file_picker: ^13.1.0
   image_picker: ^1.1.2
   share_plus: ^13.3.0
   open_filex: ^4.3.2
